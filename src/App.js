@@ -39,7 +39,7 @@ const getGPSLocation = () => {
   });
 };
 
-// Advanced LSB Steganography with header, validation and GPS
+// Advanced LSB Steganography with header, validation, GPS and timestamp
 const embedUUIDAdvanced = (imageData, userId, gpsData) => {
   const data = imageData.data;
   const header = 'IMGCRYPT';
@@ -49,7 +49,10 @@ const embedUUIDAdvanced = (imageData, userId, gpsData) => {
     ? `${gpsData.latitude},${gpsData.longitude}` 
     : 'NOGPS';
   
-  const fullMessage = `${header}|${userId}|${gpsString}|END`;
+  // Include timestamp
+  const timestamp = Date.now();
+  
+  const fullMessage = `${header}|${userId}|${gpsString}|${timestamp}|END`;
 
   const binaryMessage = fullMessage
     .split('')
@@ -101,7 +104,7 @@ const extractUUIDAdvanced = (imageData) => {
 
   for (let i = 0; i < binaryMessage.length - 800; i += 8) {
     let text = '';
-    for (let j = i; j < i + 1500; j += 8) {
+    for (let j = i; j < i + 2000; j += 8) {
       const byte = binaryMessage.substr(j, 8);
       if (byte.length < 8) break;
 
@@ -120,7 +123,8 @@ const extractUUIDAdvanced = (imageData) => {
       if (parts.length >= 2) {
         foundData.push({
           userId: parts[0],
-          gps: parts[1] || 'NOGPS'
+          gps: parts[1] || 'NOGPS',
+          timestamp: parts[2] || null
         });
       }
     }
@@ -146,10 +150,17 @@ const extractUUIDAdvanced = (imageData) => {
       }
     }
 
+    // Parse timestamp
+    let timestampResult = null;
+    if (bestMatch.timestamp && !isNaN(bestMatch.timestamp)) {
+      timestampResult = parseInt(bestMatch.timestamp);
+    }
+
     return {
       found: true,
       userId: bestMatch.userId,
       gps: gpsResult,
+      timestamp: timestampResult,
       confidence: foundData.length >= 3 ? 'Very High' : 'High'
     };
   }
@@ -158,6 +169,7 @@ const extractUUIDAdvanced = (imageData) => {
     found: false,
     userId: '',
     gps: { available: false, coordinates: null, mapsUrl: null },
+    timestamp: null,
     confidence: 'None'
   };
 };
@@ -551,7 +563,7 @@ const generatePDF = (report, imageData) => {
     ['Asset File Size:', report.assetFileSize],
     ['Asset Resolution:', report.assetResolution],
     ['User Encrypted Resolution:', report.userEncryptedResolution],
-    ['Time Stamp:', new Date(report.timestamp).toLocaleString()],
+    ['Time Stamp:', report.timestamp ? new Date(report.timestamp).toLocaleString() : 'Not Available'],
     ['Capture Location:', report.captureLocationInfo],
     ['GPS Location:', report.gpsLocation?.available ? report.gpsLocation.coordinates : 'Not Available']
   ];
@@ -688,17 +700,25 @@ const ImageCryptoAnalyzer = () => {
       setCameraActive(true);
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } }
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 } 
+        },
+        audio: false
       });
 
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.play();
+          videoRef.current.setAttribute('playsinline', true);
+          videoRef.current.setAttribute('autoplay', true);
+          videoRef.current.setAttribute('muted', true);
+          videoRef.current.play().catch(err => console.log('Play error:', err));
         }
-      }, 0);
+      }, 100);
     } catch (err) {
-      alert('Camera failed: ' + err.message);
+      alert('Camera failed: ' + err.message + '\n\nMake sure:\n1. You allowed camera permission\n2. You are using HTTPS\n3. No other app is using camera');
       setCameraActive(false);
     }
   };
@@ -872,7 +892,7 @@ const ImageCryptoAnalyzer = () => {
         assetFileSize: (selectedFile.size / 1024).toFixed(2) + ' KB',
         assetResolution: canvas.width + ' x ' + canvas.height,
         userEncryptedResolution: uuidResult.found ? canvas.width + ' x ' + canvas.height : 'N/A',
-        timestamp: new Date().toISOString(),
+        timestamp: uuidResult.found && uuidResult.timestamp ? uuidResult.timestamp : null,
         captureLocationInfo: captureSource,
         gpsLocation: uuidResult.gps,
         totalPixels: totalPixels.toLocaleString(),
@@ -1015,7 +1035,13 @@ const ImageCryptoAnalyzer = () => {
 
                   {cameraActive && (
                     <div className="relative">
-                      <video ref={videoRef} autoPlay className="w-full rounded-lg" />
+                      <video 
+                        ref={videoRef} 
+                        autoPlay 
+                        playsInline 
+                        muted
+                        className="w-full rounded-lg" 
+                      />
                       <button
                         onClick={stopCamera}
                         className="absolute top-2 right-2 bg-red-600 text-white px-4 py-2 rounded"
@@ -1141,7 +1167,7 @@ const ImageCryptoAnalyzer = () => {
                           <div><span className="font-semibold">Asset File Size:</span> {analysisReport.assetFileSize}</div>
                           <div><span className="font-semibold">Asset Resolution:</span> {analysisReport.assetResolution}</div>
                           <div><span className="font-semibold">User Encrypted Resolution:</span> {analysisReport.userEncryptedResolution}</div>
-                          <div><span className="font-semibold">Time Stamp:</span> {new Date(analysisReport.timestamp).toLocaleString()}</div>
+                          <div><span className="font-semibold">Time Stamp:</span> {analysisReport.timestamp ? new Date(analysisReport.timestamp).toLocaleString() : 'Not Available'}</div>
                           <div><span className="font-semibold">Capture Location:</span> {analysisReport.captureLocationInfo}</div>
                           <div>
                             <span className="font-semibold">GPS Location:</span>{' '}
