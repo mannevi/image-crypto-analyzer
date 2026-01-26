@@ -1,11 +1,55 @@
 import React, { useState, useRef } from 'react';
 import { Camera, Upload, FileSearch, Download, AlertCircle, CheckCircle } from 'lucide-react';
 
-// Advanced LSB Steganography with header and validation
- const embedUUIDAdvanced = (imageData, userId) => {
+// IP Address Helper Function
+const getPublicIP = async () => {
+  try {
+    const res = await fetch('https://api.ipify.org?format=json');
+    const data = await res.json();
+    return data.ip || 'Unavailable';
+  } catch {
+    return 'Unavailable';
+  }
+};
+
+// GPS Location Helper Function
+const getGPSLocation = () => {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve({ available: false, coordinates: null, address: 'GPS not supported' });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        resolve({
+          available: true,
+          latitude: latitude,
+          longitude: longitude,
+          coordinates: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+          mapsUrl: `https://www.google.com/maps?q=${latitude},${longitude}`
+        });
+      },
+      (error) => {
+        resolve({ available: false, coordinates: null, address: 'Location unavailable' });
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  });
+};
+
+// Advanced LSB Steganography with header, validation and GPS
+const embedUUIDAdvanced = (imageData, userId, gpsData) => {
   const data = imageData.data;
   const header = 'IMGCRYPT';
-  const fullMessage = `${header}|${userId}|${userId.length}|END`;
+  
+  // Include GPS in the embedded data
+  const gpsString = gpsData.available 
+    ? `${gpsData.latitude},${gpsData.longitude}` 
+    : 'NOGPS';
+  
+  const fullMessage = `${header}|${userId}|${gpsString}|END`;
 
   const binaryMessage = fullMessage
     .split('')
@@ -31,6 +75,18 @@ import { Camera, Upload, FileSearch, Download, AlertCircle, CheckCircle } from '
   return imageData;
 };
 
+const generateAuthorshipCertificateId = (assetId, userId, deviceId) => {
+  const raw = `${assetId}|${userId}|${deviceId}`;
+  let hash = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+    hash |= 0;
+  }
+
+  return 'CERT-' + Math.abs(hash).toString(36).toUpperCase();
+};
+
 const extractUUIDAdvanced = (imageData) => {
   const data = imageData.data;
   let binaryMessage = '';
@@ -41,11 +97,11 @@ const extractUUIDAdvanced = (imageData) => {
     }
   }
 
-  const foundIds = [];
+  const foundData = [];
 
   for (let i = 0; i < binaryMessage.length - 800; i += 8) {
     let text = '';
-    for (let j = i; j < i + 1200; j += 8) {
+    for (let j = i; j < i + 1500; j += 8) {
       const byte = binaryMessage.substr(j, 8);
       if (byte.length < 8) break;
 
@@ -56,32 +112,52 @@ const extractUUIDAdvanced = (imageData) => {
     }
 
     if (text.includes('IMGCRYPT|') && text.includes('|END')) {
-      const parts = text.split('|');
+      const startIdx = text.indexOf('IMGCRYPT|') + 9;
+      const endIdx = text.indexOf('|END');
+      const content = text.substring(startIdx, endIdx);
+      const parts = content.split('|');
+      
       if (parts.length >= 2) {
-        foundIds.push(parts[1]);
+        foundData.push({
+          userId: parts[0],
+          gps: parts[1] || 'NOGPS'
+        });
       }
     }
   }
 
-  if (foundIds.length > 0) {
-    const votedId = foundIds
-      .sort(
-        (a, b) =>
-          foundIds.filter(v => v === a).length -
-          foundIds.filter(v => v === b).length
-      )
-      .pop();
+  if (foundData.length > 0) {
+    const bestMatch = foundData[0];
+    
+    // Parse GPS data
+    let gpsResult = { available: false, coordinates: null, mapsUrl: null };
+    if (bestMatch.gps && bestMatch.gps !== 'NOGPS') {
+      const gpsParts = bestMatch.gps.split(',');
+      if (gpsParts.length === 2) {
+        const lat = parseFloat(gpsParts[0]);
+        const lng = parseFloat(gpsParts[1]);
+        gpsResult = {
+          available: true,
+          latitude: lat,
+          longitude: lng,
+          coordinates: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+          mapsUrl: `https://www.google.com/maps?q=${lat},${lng}`
+        };
+      }
+    }
 
     return {
       found: true,
-      userId: votedId,
-      confidence: foundIds.length >= 6 ? 'Very High' : 'High'
+      userId: bestMatch.userId,
+      gps: gpsResult,
+      confidence: foundData.length >= 3 ? 'Very High' : 'High'
     };
   }
 
   return {
     found: false,
     userId: '',
+    gps: { available: false, coordinates: null, mapsUrl: null },
     confidence: 'None'
   };
 };
@@ -294,26 +370,25 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   let confidence = 0;
   let reasoning = [];
   
-if (hasUUID) {
-  const isNonStandardAspect = aspectRatio < 0.7 || aspectRatio > 1.8;
-  const likelyCropped = totalPixels < width * height * 0.85;
+  if (hasUUID) {
+    const isNonStandardAspect = aspectRatio < 0.7 || aspectRatio > 1.8;
+    const likelyCropped = totalPixels < width * height * 0.85;
 
-  if (isNonStandardAspect || likelyCropped) {
-    detectedCase = 'Case 5: Encrypted with UUID and Cropped';
-    confidence = totalPixels < 150000 ? 85 : 95;
-    reasoning.push('UUID encryption header verified');
-    reasoning.push('Likely cropped image');
-    reasoning.push('Aspect ratio: ' + aspectRatio.toFixed(2));
-    if (totalPixels < 150000) {
-      reasoning.push('Reduced confidence due to small cropped size');
+    if (isNonStandardAspect || likelyCropped) {
+      detectedCase = 'Case 5: Encrypted with UUID and Cropped';
+      confidence = totalPixels < 150000 ? 85 : 95;
+      reasoning.push('UUID encryption header verified');
+      reasoning.push('Likely cropped image');
+      reasoning.push('Aspect ratio: ' + aspectRatio.toFixed(2));
+      if (totalPixels < 150000) {
+        reasoning.push('Reduced confidence due to small cropped size');
+      }
+    } else {
+      detectedCase = 'Case 4: Encrypted with UUID';
+      confidence = 98;
+      reasoning.push('UUID encryption header verified');
     }
   } else {
-    detectedCase = 'Case 4: Encrypted with UUID';
-    confidence = 98;
-    reasoning.push('UUID encryption header verified');
-  }
-}
- else {
     // AI Detection Score (0-100)
     let aiScore = 0;
     
@@ -429,7 +504,6 @@ if (hasUUID) {
     }
   };
 };
-  
 
 
 // PDF generation function
@@ -472,12 +546,14 @@ const generatePDF = (report, imageData) => {
   ctx.font = '12px Arial';
   const ownershipFields = [
     ['Asset ID:', report.assetId],
+    ['Authorship Certificate ID:', report.authorshipCertificateId],
     ['Unique User ID:', report.uniqueUserId],
     ['Asset File Size:', report.assetFileSize],
     ['Asset Resolution:', report.assetResolution],
     ['User Encrypted Resolution:', report.userEncryptedResolution],
     ['Time Stamp:', new Date(report.timestamp).toLocaleString()],
-    ['Capture Location:', report.captureLocationInfo]
+    ['Capture Location:', report.captureLocationInfo],
+    ['GPS Location:', report.gpsLocation?.available ? report.gpsLocation.coordinates : 'Not Available']
   ];
   
   ownershipFields.forEach(function(field) {
@@ -505,10 +581,9 @@ const generatePDF = (report, imageData) => {
     ['Pixels Verified:', report.pixelsVerifiedWithBiometrics],
     ['Device Name:', report.deviceName],
     ['Device ID:', report.deviceId],
+    ['IP Address:', report.ipAddress],
     ['Ownership Info:', report.ownershipInfo],
-    ['Certificate:', report.authorshipCertificate],
-    ['Color Variance:', report.colorVariance],
-    ['Compression Ratio:', report.compressionRatio]
+    ['Certificate:', report.authorshipCertificate]
   ];
   
   technicalFields.forEach(function(field) {
@@ -538,118 +613,130 @@ const generatePDF = (report, imageData) => {
     });
   }
   
-  // Add analyzed image if space available
-  if (imageData && y < 600) {
-    y += 15;
+  // -------- ANALYZED IMAGE SECTION --------
+  if (imageData) {
+    y += 20;
+
     ctx.fillStyle = '#1e40af';
     ctx.font = 'bold 16px Arial';
     ctx.fillText('ANALYZED IMAGE', 40, y);
-    y += 25;
-    
+    y += 20;
+
     const img = new Image();
-    img.onload = function() {
-      const maxWidth = 515;
-      const maxHeight = 842 - y - 40;
-      let width = img.width;
-      let height = img.height;
-      
-      if (width > maxWidth) {
-        height = (maxWidth / width) * height;
-        width = maxWidth;
-      }
-      if (height > maxHeight) {
-        width = (maxHeight / height) * width;
-        height = maxHeight;
-      }
-      
-      ctx.drawImage(img, 40, y, width, height);
-      
+    img.onload = function () {
+      const maxWidth = 500;
+      const maxHeight = 220;
+
+      let drawWidth = img.width;
+      let drawHeight = img.height;
+
+      // Scale image proportionally
+      const scale = Math.min(
+        maxWidth / drawWidth,
+        maxHeight / drawHeight,
+        1
+      );
+
+      drawWidth *= scale;
+      drawHeight *= scale;
+
+      ctx.drawImage(img, 40, y, drawWidth, drawHeight);
+
       // Footer
       ctx.fillStyle = '#6b7280';
       ctx.font = '10px Arial';
-      ctx.fillText('Report Generated: ' + new Date().toLocaleString(), 40, 825);
-      
-      canvas.toBlob(function(blob) {
+      ctx.fillText(
+        'Report Generated: ' + new Date().toLocaleString(),
+        40,
+        825
+      );
+
+      // SAVE PDF IMAGE
+      canvas.toBlob((blob) => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'analysis-report-' + report.assetId + '.png';
+        a.download = `analysis-report-${report.assetId}.png`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       });
     };
+
     img.src = imageData;
-  } else {
-    // Footer
-    ctx.fillStyle = '#6b7280';
-    ctx.font = '10px Arial';
-    ctx.fillText('Report Generated: ' + new Date().toLocaleString(), 40, 825);
-    
-    canvas.toBlob(function(blob) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'analysis-report-' + report.assetId + '.png';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    });
+    return;
   }
 };
 
 const ImageCryptoAnalyzer = () => {
   const [activeTab, setActiveTab] = useState('encrypt');
   const [selectedFile, setSelectedFile] = useState(null);
+  const [captureSource, setCaptureSource] = useState('Browser Upload');
   const [preview, setPreview] = useState(null);
   const [userId, setUserId] = useState('');
   const [encryptedImage, setEncryptedImage] = useState(null);
   const [analysisReport, setAnalysisReport] = useState(null);
+  const [showDeviceDetails, setShowDeviceDetails] = useState(false);
   const [processing, setProcessing] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [cameraActive, setCameraActive] = useState(false);
 
-  const startCamera = async () => {
+   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' } 
+      setCameraActive(true);
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } }
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setCameraActive(true);
-      }
+
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play();
+        }
+      }, 0);
     } catch (err) {
-      alert('Camera access denied or not available');
-    }
-  };
-
-  const captureImage = () => {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (canvas && video) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
-      canvas.toBlob((blob) => {
-        const file = new File([blob], 'camera-capture.png', { type: 'image/png' });
-        handleFileSelect(file);
-        stopCamera();
-      });
-    }
-  };
-
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+      alert('Camera failed: ' + err.message);
       setCameraActive(false);
     }
   };
 
+  const stopCamera = () => {
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(t => t.stop());
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  };
+
+  const captureImage = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    canvas.toBlob(blob => {
+      const file = new File([blob], 'camera-capture.png', { type: 'image/png' });
+      setSelectedFile(file);
+      setCaptureSource('Camera Capture');
+      const reader = new FileReader();
+      reader.onload = (e) => setPreview(e.target.result);
+      reader.readAsDataURL(file);
+      stopCamera();
+    });
+  };
+
   const handleFileSelect = (file) => {
+    setCaptureSource('Browser Upload'); 
+
     if (file && file.type.startsWith('image/')) {
       setSelectedFile(file);
       const reader = new FileReader();
@@ -666,6 +753,9 @@ const ImageCryptoAnalyzer = () => {
 
     setProcessing(true);
     
+    // Get GPS location
+    const gpsData = await getGPSLocation();
+    
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
@@ -675,14 +765,19 @@ const ImageCryptoAnalyzer = () => {
       ctx.drawImage(img, 0, 0);
       
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const encryptedData = embedUUIDAdvanced(imageData, userId);
+      const encryptedData = embedUUIDAdvanced(imageData, userId, gpsData);
       ctx.putImageData(encryptedData, 0, 0);
       
       canvas.toBlob((blob) => {
         const encryptedUrl = URL.createObjectURL(blob);
         setEncryptedImage(encryptedUrl);
         setProcessing(false);
-        alert('UUID successfully embedded! Download as PNG to preserve encryption.');
+        
+        const locationMsg = gpsData.available 
+          ? `\nGPS Location: ${gpsData.coordinates}` 
+          : '\nGPS: Not available';
+        
+        alert('UUID successfully embedded!' + locationMsg + '\n\nDownload as PNG to preserve encryption.');
       }, 'image/png');
     };
     img.src = preview;
@@ -695,6 +790,9 @@ const ImageCryptoAnalyzer = () => {
     }
 
     setProcessing(true);
+
+    // Fetch public IP address
+    const publicIP = await getPublicIP();
 
     const img = new Image();
     img.onload = () => {
@@ -717,30 +815,110 @@ const ImageCryptoAnalyzer = () => {
       );
       
       const totalPixels = canvas.width * canvas.height;
-      
+      const assetId = 'AST-' + Date.now();
+
+      // ---------- DEVICE ID ----------
+      let deviceId = localStorage.getItem('deviceFingerprint');
+
+      if (!deviceId) {
+        const screenData =
+          window.screen.width +
+          'x' +
+          window.screen.height +
+          'x' +
+          window.screen.colorDepth;
+
+        const platform = navigator.platform || 'unknown';
+        const cores = navigator.hardwareConcurrency || 0;
+        const memory = navigator.deviceMemory || 0;
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
+        const language = navigator.language || 'unknown';
+        const touchPoints = navigator.maxTouchPoints || 0;
+        const userAgent = navigator.userAgent || 'unknown';
+
+        const fingerprint =
+          screenData +
+          '|' +
+          platform +
+          '|' +
+          cores +
+          '|' +
+          memory +
+          '|' +
+          timezone +
+          '|' +
+          language +
+          '|' +
+          touchPoints +
+          '|' +
+          userAgent;
+
+        let hash = 0;
+        for (let i = 0; i < fingerprint.length; i++) {
+          hash = ((hash << 5) - hash) + fingerprint.charCodeAt(i);
+          hash |= 0;
+        }
+
+        const hashStr = Math.abs(hash).toString(36).toUpperCase().slice(0, 8);
+        const deviceType = /Android|iPhone|iPad/i.test(userAgent) ? 'MOB' : 'DSK';
+
+        deviceId = `${deviceType}-${hashStr}`;
+        localStorage.setItem('deviceFingerprint', deviceId);
+      }
+
       const report = {
-        assetId: 'AST-' + Date.now(),
+        assetId: assetId,
         uniqueUserId: uuidResult.found ? uuidResult.userId : 'Not Found',
         assetFileSize: (selectedFile.size / 1024).toFixed(2) + ' KB',
         assetResolution: canvas.width + ' x ' + canvas.height,
         userEncryptedResolution: uuidResult.found ? canvas.width + ' x ' + canvas.height : 'N/A',
         timestamp: new Date().toISOString(),
-        captureLocationInfo: 'Browser Upload',
+        captureLocationInfo: captureSource,
+        gpsLocation: uuidResult.gps,
         totalPixels: totalPixels.toLocaleString(),
         pixelsVerifiedWithBiometrics: uuidResult.found ? Math.floor(totalPixels * 0.98).toLocaleString() : '0',
         deviceName: navigator.userAgent.split('(')[1]?.split(')')[0] || 'Unknown',
-        deviceId: 'DEV-' + Math.random().toString(36).substr(2, 9).toUpperCase(),
-        ipAddress: 'Client-side (unavailable)',
+        deviceDetails: (() => {
+          const screenData = window.screen.width + 'x' + window.screen.height;
+          const colorDepth = window.screen.colorDepth + '-bit';
+          const platform = navigator.platform || 'Unknown';
+          const cores = navigator.hardwareConcurrency || 'Unknown';
+          const memory = navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'Unknown';
+          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown';
+          const language = navigator.language || 'Unknown';
+          const touchPoints = navigator.maxTouchPoints || 0;
+          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+          const deviceType = isMobile ? 'Mobile' : 'Desktop';
+          const browser = navigator.userAgent;
+          
+          return {
+            screen: screenData,
+            colorDepth: colorDepth,
+            platform: platform,
+            cores: cores,
+            memory: memory,
+            timezone: timezone,
+            language: language,
+            touchCapable: touchPoints > 0 ? 'Yes' : 'No',
+            touchPoints: touchPoints,
+            deviceType: deviceType,
+            browser: browser
+          };
+        })(),
+        deviceId: deviceId,
+        ipAddress: publicIP,
         ownershipInfo: uuidResult.found ? 'Verified - ' + uuidResult.confidence + ' Confidence' : 'Unknown',
-        authorshipCertificate: uuidResult.found ? 'Valid & Verified' : 'Not Present',
+        authorshipCertificateId: uuidResult.found
+          ? generateAuthorshipCertificateId(
+              assetId,
+              uuidResult.userId,
+              deviceId
+            )
+          : 'Not Present',
+        authorshipCertificate: uuidResult.found ? 'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : selectedFile.type.startsWith('audio/') ? 'Audio' : selectedFile.type.startsWith('video/') ? 'Video' : selectedFile.type.includes('pdf') || selectedFile.type.includes('document') || selectedFile.type.includes('word') || selectedFile.type.includes('sheet') ? 'Document' : 'File') + ')' : 'Not Present',
         detectedCase: classification.detectedCase,
         confidence: classification.confidence,
-        reasoning: classification.reasoning,
-        colorVariance: classification.metrics.variance,
-        compressionRatio: classification.metrics.compressionRatio,
-        noiseLevel: classification.metrics.noiseLevel,
-        edgeStrength: classification.metrics.edgeStrength,
-        lsbEntropy: classification.metrics.lsbEntropy
+        reasoning: classification.reasoning
       };
 
       setAnalysisReport(report);
@@ -795,7 +973,7 @@ const ImageCryptoAnalyzer = () => {
                   <h3 className="font-semibold text-blue-900 mb-2">Advanced LSB Steganography</h3>
                   <p className="text-blue-800 text-sm">
                     This system uses advanced LSB steganography with a validation header.
-                    Your User ID is embedded across RGB channels with error detection.
+                    Your User ID and GPS location are embedded across RGB channels with error detection.
                     <strong className="block mt-2">Important: Download as PNG to preserve encryption!</strong>
                   </p>
                 </div>
@@ -889,8 +1067,8 @@ const ImageCryptoAnalyzer = () => {
                   <h3 className="font-semibold text-amber-900 mb-2">Advanced AI Classification</h3>
                   <ul className="text-amber-800 text-sm space-y-1">
                     <li>• Advanced LSB extraction with header validation</li>
+                    <li>• GPS location extraction from encrypted images</li>
                     <li>• Multi-metric classification algorithm</li>
-                    <li>• Noise analysis, edge detection, color variance</li>
                     <li>• High-confidence case detection with reasoning</li>
                   </ul>
                 </div>
@@ -953,6 +1131,10 @@ const ImageCryptoAnalyzer = () => {
                     <div className="grid md:grid-cols-2 gap-4">
                       <div className="bg-white p-4 rounded-lg border">
                         <h4 className="font-bold text-blue-900 mb-3 border-b pb-2">Ownership at Creation</h4>
+                        <div>
+                          <span className="font-semibold">Authorship Certificate ID:</span>{' '}
+                          {analysisReport.authorshipCertificateId}
+                        </div>
                         <div className="space-y-2 text-sm">
                           <div><span className="font-semibold">Asset ID:</span> {analysisReport.assetId}</div>
                           <div><span className="font-semibold">Unique User ID:</span> {analysisReport.uniqueUserId}</div>
@@ -961,6 +1143,21 @@ const ImageCryptoAnalyzer = () => {
                           <div><span className="font-semibold">User Encrypted Resolution:</span> {analysisReport.userEncryptedResolution}</div>
                           <div><span className="font-semibold">Time Stamp:</span> {new Date(analysisReport.timestamp).toLocaleString()}</div>
                           <div><span className="font-semibold">Capture Location:</span> {analysisReport.captureLocationInfo}</div>
+                          <div>
+                            <span className="font-semibold">GPS Location:</span>{' '}
+                            {analysisReport.gpsLocation?.available ? (
+                              <a 
+                                href={analysisReport.gpsLocation.mapsUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 underline hover:text-blue-800"
+                              >
+                                📍 {analysisReport.gpsLocation.coordinates}
+                              </a>
+                            ) : (
+                              <span className="text-gray-500">Not Available</span>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -970,13 +1167,18 @@ const ImageCryptoAnalyzer = () => {
                           <div><span className="font-semibold">Total Pixels:</span> {analysisReport.totalPixels}</div>
                           <div><span className="font-semibold">Pixels Verified:</span> {analysisReport.pixelsVerifiedWithBiometrics}</div>
                           <div><span className="font-semibold">Device Name:</span> {analysisReport.deviceName}</div>
-                          <div><span className="font-semibold">Device ID:</span> {analysisReport.deviceId}</div>
+                          <div>
+                            <span className="font-semibold">Device ID:</span>{' '}
+                            <span 
+                              onClick={() => setShowDeviceDetails(true)}
+                              className="text-blue-600 underline cursor-pointer hover:text-blue-800"
+                            >
+                              {analysisReport.deviceId}
+                            </span>
+                          </div>
+                          <div><span className="font-semibold">IP Address:</span> {analysisReport.ipAddress}</div>
                           <div><span className="font-semibold">Ownership Info:</span> {analysisReport.ownershipInfo}</div>
                           <div><span className="font-semibold">Certificate:</span> {analysisReport.authorshipCertificate}</div>
-                          <div><span className="font-semibold">Color Variance:</span> {analysisReport.colorVariance}</div>
-                          <div><span className="font-semibold">Compression Ratio:</span> {analysisReport.compressionRatio}</div>
-                          <div><span className="font-semibold">Noise Level:</span> {analysisReport.noiseLevel}</div>
-                          <div><span className="font-semibold">Edge Strength:</span> {analysisReport.edgeStrength}</div>
                         </div>
                       </div>
                     </div>
@@ -987,6 +1189,81 @@ const ImageCryptoAnalyzer = () => {
           </div>
         </div>
       </div>
+      {showDeviceDetails && analysisReport && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-bold text-white">Device Information</h2>
+                <button 
+                  onClick={() => setShowDeviceDetails(false)}
+                  className="text-white hover:text-gray-200 text-2xl font-bold"
+                >
+                  ×
+                </button>
+              </div>
+              <p className="text-blue-100 text-sm mt-1">ID: {analysisReport.deviceId}</p>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Device Type</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.deviceType || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Platform</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.platform || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Screen Resolution</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.screen || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Color Depth</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.colorDepth || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">CPU Cores</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.cores || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Memory</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.memory || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Timezone</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.timezone || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Language</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.language || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Touch Capable</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.touchCapable || 'Unknown'}</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase">Touch Points</p>
+                  <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.touchPoints || '0'}</p>
+                </div>
+              </div>
+              
+              <div className="bg-gray-50 p-3 rounded-lg">
+                <p className="text-xs text-gray-500 uppercase mb-1">Browser / User Agent</p>
+                <p className="font-semibold text-gray-800 text-xs break-all">{analysisReport.deviceDetails?.browser || 'Unknown'}</p>
+              </div>
+              
+              <button
+                onClick={() => setShowDeviceDetails(false)}
+                className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
