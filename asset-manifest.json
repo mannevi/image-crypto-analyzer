@@ -1,15 +1,15 @@
 {
   "files": {
-    "main.css": "/image-crypto-analyzer/static/css/main.5a1e6edc.css",
-    "main.js": "/image-crypto-analyzer/static/js/main.a26d6e6f.js",
+    "main.css": "/image-crypto-analyzer/static/css/main.13b2bd77.css",
+    "main.js": "/image-crypto-analyzer/static/js/main.b96feb04.js",
     "static/js/453.736d7e44.chunk.js": "/image-crypto-analyzer/static/js/453.736d7e44.chunk.js",
     "index.html": "/image-crypto-analyzer/index.html",
-    "main.5a1e6edc.css.map": "/image-crypto-analyzer/static/css/main.5a1e6edc.css.map",
-    "main.a26d6e6f.js.map": "/image-crypto-analyzer/static/js/main.a26d6e6f.js.map",
+    "main.13b2bd77.css.map": "/image-crypto-analyzer/static/css/main.13b2bd77.css.map",
+    "main.b96feb04.js.map": "/image-crypto-analyzer/static/js/main.b96feb04.js.map",
     "453.736d7e44.chunk.js.map": "/image-crypto-analyzer/static/js/453.736d7e44.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.5a1e6edc.css",
-    "static/js/main.a26d6e6f.js"
+    "static/css/main.13b2bd77.css",
+    "static/js/main.b96feb04.js"
   ]
 }
