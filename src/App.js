@@ -1,5 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Upload, FileSearch, Download, AlertCircle, CheckCircle } from 'lucide-react';
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
 
 // IP Address Helper Function
 const getPublicIP = async () => {
@@ -39,56 +43,500 @@ const getGPSLocation = () => {
   });
 };
 
-// Advanced LSB Steganography with header, validation, GPS and timestamp
-const embedUUIDAdvanced = (imageData, userId, gpsData) => {
-  const data = imageData.data;
-  const header = 'IMGCRYPT';
+// Fallback: use file's lastModified date
+const getFileFallbackTime = (file) => {
+  if (file.lastModified) {
+    return {
+      timestamp: file.lastModified,
+      source: 'File Modified',
+      dateString: new Date(file.lastModified).toLocaleString()
+    };
+  }
   
-  // Include GPS in the embedded data
-  const gpsString = gpsData.available 
-    ? `${gpsData.latitude},${gpsData.longitude}` 
+  // Last resort: current time
+  return {
+    timestamp: Date.now(),
+    source: 'Current Time',
+    dateString: new Date().toLocaleString()
+  };
+};
+
+// Extract capture time from image file
+const getCaptureTime = (file) => {
+  return new Promise((resolve) => {
+    // Priority 1: Try to read EXIF data from JPEG images
+    if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const view = new DataView(e.target.result);
+          
+          // Check for JPEG marker
+          if (view.getUint16(0, false) !== 0xFFD8) {
+            resolve(getFileFallbackTime(file));
+            return;
+          }
+
+          let offset = 2;
+          while (offset < view.byteLength) {
+            const marker = view.getUint16(offset, false);
+            offset += 2;
+
+            // Found EXIF marker (APP1)
+            if (marker === 0xFFE1) {
+              // Check for "Exif" string
+              const exifHeader = String.fromCharCode(
+                view.getUint8(offset + 2),
+                view.getUint8(offset + 3),
+                view.getUint8(offset + 4),
+                view.getUint8(offset + 5)
+              );
+              
+              if (exifHeader === 'Exif') {
+                const tiffOffset = offset + 8;
+                const littleEndian = view.getUint16(tiffOffset, false) === 0x4949;
+                
+                const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
+                const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
+                
+                // Search for EXIF IFD pointer (tag 0x8769)
+                for (let i = 0; i < numEntries; i++) {
+                  const entryOffset = tiffOffset + ifdOffset + 2 + (i * 12);
+                  const tag = view.getUint16(entryOffset, littleEndian);
+                  
+                  if (tag === 0x8769) {
+                    // Found EXIF IFD
+                    const exifIfdOffset = view.getUint32(entryOffset + 8, littleEndian);
+                    const exifNumEntries = view.getUint16(tiffOffset + exifIfdOffset, littleEndian);
+                    
+                    // Search for DateTimeOriginal (tag 0x9003) or DateTimeDigitized (tag 0x9004)
+                    for (let j = 0; j < exifNumEntries; j++) {
+                      const exifEntryOffset = tiffOffset + exifIfdOffset + 2 + (j * 12);
+                      const exifTag = view.getUint16(exifEntryOffset, littleEndian);
+                      
+                      // DateTimeOriginal (0x9003) or DateTimeDigitized (0x9004)
+                      if (exifTag === 0x9003 || exifTag === 0x9004) {
+                        const valueOffset = view.getUint32(exifEntryOffset + 8, littleEndian);
+                        let dateStr = '';
+                        
+                        for (let k = 0; k < 19; k++) {
+                          dateStr += String.fromCharCode(view.getUint8(tiffOffset + valueOffset + k));
+                        }
+                        
+                        // Parse "YYYY:MM:DD HH:MM:SS" format
+                        const parts = dateStr.split(' ');
+                        if (parts.length === 2) {
+                          const dateParts = parts[0].split(':');
+                          const timeParts = parts[1].split(':');
+                          
+                          if (dateParts.length === 3 && timeParts.length === 3) {
+                            const captureDate = new Date(
+                              parseInt(dateParts[0]),
+                              parseInt(dateParts[1]) - 1,
+                              parseInt(dateParts[2]),
+                              parseInt(timeParts[0]),
+                              parseInt(timeParts[1]),
+                              parseInt(timeParts[2])
+                            );
+                            
+                            resolve({
+                              timestamp: captureDate.getTime(),
+                              source: 'EXIF',
+                              dateString: dateStr
+                            });
+                            return;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              
+              resolve(getFileFallbackTime(file));
+              return;
+            }
+            
+            // Skip to next marker
+            if (marker === 0xFFD9 || marker === 0xFFDA) break;
+            const length = view.getUint16(offset, false);
+            offset += length;
+          }
+          
+          resolve(getFileFallbackTime(file));
+          
+        } catch (error) {
+          resolve(getFileFallbackTime(file));
+        }
+      };
+      
+      reader.onerror = () => resolve(getFileFallbackTime(file));
+      reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
+      
+    } else {
+      resolve(getFileFallbackTime(file));
+    }
+  });
+};
+
+// Extract device info from EXIF (for JPEG images)
+const getExifDeviceInfo = (file) => {
+  return new Promise((resolve) => {
+    if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const view = new DataView(e.target.result);
+          
+          if (view.getUint16(0, false) !== 0xFFD8) {
+            resolve({ found: false });
+            return;
+          }
+
+          let offset = 2;
+          let make = null;
+          let model = null;
+
+          while (offset < view.byteLength) {
+            const marker = view.getUint16(offset, false);
+            offset += 2;
+
+            if (marker === 0xFFE1) {
+              const exifHeader = String.fromCharCode(
+                view.getUint8(offset + 2),
+                view.getUint8(offset + 3),
+                view.getUint8(offset + 4),
+                view.getUint8(offset + 5)
+              );
+              
+              if (exifHeader === 'Exif') {
+                const tiffOffset = offset + 8;
+                const littleEndian = view.getUint16(tiffOffset, false) === 0x4949;
+                const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
+                const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
+                
+                for (let i = 0; i < numEntries; i++) {
+                  const entryOffset = tiffOffset + ifdOffset + 2 + (i * 12);
+                  const tag = view.getUint16(entryOffset, littleEndian);
+                  const type = view.getUint16(entryOffset + 2, littleEndian);
+                  const numValues = view.getUint32(entryOffset + 4, littleEndian);
+                  
+                  // Tag 0x010F = Make, Tag 0x0110 = Model
+                  if (tag === 0x010F || tag === 0x0110) {
+                    let valueOffset;
+                    if (numValues * (type === 2 ? 1 : 2) > 4) {
+                      valueOffset = view.getUint32(entryOffset + 8, littleEndian);
+                    } else {
+                      valueOffset = entryOffset + 8 - tiffOffset;
+                    }
+                    
+                    let str = '';
+                    for (let j = 0; j < numValues - 1; j++) {
+                      const charCode = view.getUint8(tiffOffset + valueOffset + j);
+                      if (charCode === 0) break;
+                      str += String.fromCharCode(charCode);
+                    }
+                    
+                    if (tag === 0x010F) make = str.trim();
+                    if (tag === 0x0110) model = str.trim();
+                  }
+                }
+              }
+              
+              break;
+            }
+            
+            if (marker === 0xFFD9 || marker === 0xFFDA) break;
+            const length = view.getUint16(offset, false);
+            offset += length;
+          }
+          
+          if (make || model) {
+            const deviceName = [make, model].filter(Boolean).join(' ');
+            // Generate device ID from make+model
+            let hash = 0;
+            for (let i = 0; i < deviceName.length; i++) {
+              hash = ((hash << 5) - hash) + deviceName.charCodeAt(i);
+              hash |= 0;
+            }
+            const deviceId = 'CAM-' + Math.abs(hash).toString(36).toUpperCase().slice(0, 6);
+            
+            resolve({
+              found: true,
+              make: make,
+              model: model,
+              deviceName: deviceName,
+              deviceId: deviceId,
+              source: 'EXIF'
+            });
+          } else {
+            resolve({ found: false });
+          }
+          
+        } catch (error) {
+          resolve({ found: false });
+        }
+      };
+      
+      reader.onerror = () => resolve({ found: false });
+      reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
+      
+    } else {
+      resolve({ found: false });
+    }
+  });
+};
+
+// Extract GPS from EXIF (for JPEG images)
+const getExifGPS = (file) => {
+  return new Promise((resolve) => {
+    if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const view = new DataView(e.target.result);
+          
+          if (view.getUint16(0, false) !== 0xFFD8) {
+            resolve({ found: false });
+            return;
+          }
+
+          let offset = 2;
+
+          while (offset < view.byteLength) {
+            const marker = view.getUint16(offset, false);
+            offset += 2;
+
+            if (marker === 0xFFE1) {
+              const exifHeader = String.fromCharCode(
+                view.getUint8(offset + 2),
+                view.getUint8(offset + 3),
+                view.getUint8(offset + 4),
+                view.getUint8(offset + 5)
+              );
+              
+              if (exifHeader === 'Exif') {
+                const tiffOffset = offset + 8;
+                const littleEndian = view.getUint16(tiffOffset, false) === 0x4949;
+                const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
+                const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
+                
+                // Find GPS IFD pointer (tag 0x8825)
+                for (let i = 0; i < numEntries; i++) {
+                  const entryOffset = tiffOffset + ifdOffset + 2 + (i * 12);
+                  const tag = view.getUint16(entryOffset, littleEndian);
+                  
+                  if (tag === 0x8825) {
+                    const gpsIfdOffset = view.getUint32(entryOffset + 8, littleEndian);
+                    const gpsNumEntries = view.getUint16(tiffOffset + gpsIfdOffset, littleEndian);
+                    
+                    let latRef = 'N', lonRef = 'E';
+                    let lat = null, lon = null;
+                    
+                    for (let j = 0; j < gpsNumEntries; j++) {
+                      const gpsEntryOffset = tiffOffset + gpsIfdOffset + 2 + (j * 12);
+                      const gpsTag = view.getUint16(gpsEntryOffset, littleEndian);
+                      
+                      // GPS Latitude Ref (N/S)
+                      if (gpsTag === 0x0001) {
+                        latRef = String.fromCharCode(view.getUint8(gpsEntryOffset + 8));
+                      }
+                      // GPS Longitude Ref (E/W)
+                      if (gpsTag === 0x0003) {
+                        lonRef = String.fromCharCode(view.getUint8(gpsEntryOffset + 8));
+                      }
+                      // GPS Latitude
+                      if (gpsTag === 0x0002) {
+                        const valueOffset = view.getUint32(gpsEntryOffset + 8, littleEndian);
+                        const d = view.getUint32(tiffOffset + valueOffset, littleEndian) / view.getUint32(tiffOffset + valueOffset + 4, littleEndian);
+                        const m = view.getUint32(tiffOffset + valueOffset + 8, littleEndian) / view.getUint32(tiffOffset + valueOffset + 12, littleEndian);
+                        const s = view.getUint32(tiffOffset + valueOffset + 16, littleEndian) / view.getUint32(tiffOffset + valueOffset + 20, littleEndian);
+                        lat = d + (m / 60) + (s / 3600);
+                      }
+                      // GPS Longitude
+                      if (gpsTag === 0x0004) {
+                        const valueOffset = view.getUint32(gpsEntryOffset + 8, littleEndian);
+                        const d = view.getUint32(tiffOffset + valueOffset, littleEndian) / view.getUint32(tiffOffset + valueOffset + 4, littleEndian);
+                        const m = view.getUint32(tiffOffset + valueOffset + 8, littleEndian) / view.getUint32(tiffOffset + valueOffset + 12, littleEndian);
+                        const s = view.getUint32(tiffOffset + valueOffset + 16, littleEndian) / view.getUint32(tiffOffset + valueOffset + 20, littleEndian);
+                        lon = d + (m / 60) + (s / 3600);
+                      }
+                    }
+                    
+                    if (lat !== null && lon !== null) {
+                      if (latRef === 'S') lat = -lat;
+                      if (lonRef === 'W') lon = -lon;
+                      
+                      resolve({
+                        found: true,
+                        latitude: lat,
+                        longitude: lon,
+                        coordinates: `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
+                        mapsUrl: `https://www.google.com/maps?q=${lat},${lon}`,
+                        source: 'EXIF'
+                      });
+                      return;
+                    }
+                  }
+                }
+              }
+              break;
+            }
+            
+            if (marker === 0xFFD9 || marker === 0xFFDA) break;
+            const length = view.getUint16(offset, false);
+            offset += length;
+          }
+          
+          resolve({ found: false });
+          
+        } catch (error) {
+          resolve({ found: false });
+        }
+      };
+      
+      reader.onerror = () => resolve({ found: false });
+      reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
+      
+    } else {
+      resolve({ found: false });
+    }
+  });
+};
+
+// ============================================
+// DEVICE FINGERPRINTING (Reusable)
+// ============================================
+
+const getDeviceFingerprint = () => {
+  let deviceId = localStorage.getItem('deviceFingerprint');
+  
+  if (!deviceId) {
+    const screenData = window.screen.width + 'x' + window.screen.height + 'x' + window.screen.colorDepth;
+    const platform = navigator.platform || 'unknown';
+    const cores = navigator.hardwareConcurrency || 0;
+    const memory = navigator.deviceMemory || 0;
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
+    const language = navigator.language || 'unknown';
+    const touchPoints = navigator.maxTouchPoints || 0;
+    const userAgent = navigator.userAgent || 'unknown';
+
+    const fingerprint = screenData + '|' + platform + '|' + cores + '|' + memory + '|' + timezone + '|' + language + '|' + touchPoints + '|' + userAgent;
+
+    let hash = 0;
+    for (let i = 0; i < fingerprint.length; i++) {
+      hash = ((hash << 5) - hash) + fingerprint.charCodeAt(i);
+      hash |= 0;
+    }
+
+    const hashStr = Math.abs(hash).toString(36).toUpperCase().slice(0, 8);
+    const deviceType = /Android|iPhone|iPad/i.test(userAgent) ? 'MOB' : 'DSK';
+    deviceId = `${deviceType}-${hashStr}`;
+    localStorage.setItem('deviceFingerprint', deviceId);
+  }
+  
+  return deviceId;
+};
+
+const getDeviceDetails = () => {
+  const screenData = window.screen.width + 'x' + window.screen.height;
+  const colorDepth = window.screen.colorDepth + '-bit';
+  const platform = navigator.platform || 'Unknown';
+  const cores = navigator.hardwareConcurrency || 'Unknown';
+  const memory = navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'Unknown';
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown';
+  const language = navigator.language || 'Unknown';
+  const touchPoints = navigator.maxTouchPoints || 0;
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const deviceType = isMobile ? 'Mobile' : 'Desktop';
+  const browser = navigator.userAgent;
+  
+  return {
+    screen: screenData,
+    colorDepth: colorDepth,
+    platform: platform,
+    cores: cores,
+    memory: memory,
+    timezone: timezone,
+    language: language,
+    touchCapable: touchPoints > 0 ? 'Yes' : 'No',
+    touchPoints: touchPoints,
+    deviceType: deviceType,
+    browser: browser
+  };
+};
+
+const getCurrentDeviceName = () => {
+  return navigator.userAgent.split('(')[1]?.split(')')[0] || 'Unknown';
+};
+
+// ============================================
+// AUTHORSHIP CERTIFICATE ID GENERATION
+// ============================================
+
+const generateAuthorshipCertificateId = (assetId, userId, deviceId) => {
+  const combinedString = `${assetId}-${userId}-${deviceId}-${Date.now()}`;
+  
+  let hash = 0;
+  for (let i = 0; i < combinedString.length; i++) {
+    const char = combinedString.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  
+  const hashStr = Math.abs(hash).toString(16).toUpperCase();
+  const timestamp = Date.now().toString(36).toUpperCase();
+  
+  return `CERT-${hashStr.slice(0, 8)}-${timestamp.slice(-6)}`;
+};
+
+// ============================================
+// LSB STEGANOGRAPHY - EMBED UUID
+// ============================================
+
+const embedUUIDAdvanced = (imageData, userId, gpsData, deviceInfo, ipAddress, timestamp, deviceSource, ipSource, gpsSource) => {
+  const data = imageData.data;
+  
+  // Prepare GPS string
+  const gpsString = gpsData && gpsData.available 
+    ? `${gpsData.latitude},${gpsData.longitude}`
     : 'NOGPS';
   
-  // Include timestamp
-  const timestamp = Date.now();
+  // Create message with all metadata (Version 2 format with sources)
+  const message = `IMGCRYPT2|${userId}|${gpsString}|${timestamp || Date.now()}|${deviceInfo.deviceId || 'UNKNOWN'}|${deviceInfo.deviceName || 'UNKNOWN'}|${ipAddress || 'UNKNOWN'}|${deviceSource || 'Unknown'}|${ipSource || 'Unknown'}|${gpsSource || 'Unknown'}|END`;
   
-  const fullMessage = `${header}|${userId}|${gpsString}|${timestamp}|END`;
-
-  const binaryMessage = fullMessage
-    .split('')
-    .map(c => c.charCodeAt(0).toString(2).padStart(8, '0'))
-    .join('');
-
-  const totalPixels = data.length / 4;
-  const repetitions = 12;
-  const segmentSize = Math.floor(totalPixels / repetitions);
-
-  for (let r = 0; r < repetitions; r++) {
-    let bitIndex = 0;
-    let start = r * segmentSize * 4;
-
-    for (let i = start; i < data.length && bitIndex < binaryMessage.length; i += 4) {
-      for (let j = 0; j < 3 && bitIndex < binaryMessage.length; j++) {
-        data[i + j] = (data[i + j] & 0xFE) | Number(binaryMessage[bitIndex]);
+  // Convert message to binary
+  let binaryMessage = '';
+  for (let i = 0; i < message.length; i++) {
+    const charCode = message.charCodeAt(i);
+    binaryMessage += charCode.toString(2).padStart(8, '0');
+  }
+  
+  // Embed binary message into LSB of RGB channels
+  let bitIndex = 0;
+  const totalBits = binaryMessage.length;
+  
+  // Embed message multiple times for redundancy (at different positions)
+  const embedPositions = [0, Math.floor(data.length / 4), Math.floor(data.length / 2)];
+  
+  for (const startPos of embedPositions) {
+    bitIndex = 0;
+    for (let i = startPos; i < data.length && bitIndex < totalBits; i += 4) {
+      // Embed in R, G, B channels (skip Alpha)
+      for (let j = 0; j < 3 && bitIndex < totalBits; j++) {
+        const bit = parseInt(binaryMessage[bitIndex], 10);
+        data[i + j] = (data[i + j] & 0xFE) | bit;
         bitIndex++;
       }
     }
   }
-
+  
   return imageData;
 };
 
-const generateAuthorshipCertificateId = (assetId, userId, deviceId) => {
-  const raw = `${assetId}|${userId}|${deviceId}`;
-  let hash = 0;
-
-  for (let i = 0; i < raw.length; i++) {
-    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
-    hash |= 0;
-  }
-
-  return 'CERT-' + Math.abs(hash).toString(36).toUpperCase();
-};
+// ============================================
+// LSB STEGANOGRAPHY - EXTRACT UUID
+// ============================================
 
 const extractUUIDAdvanced = (imageData) => {
   const data = imageData.data;
@@ -104,7 +552,7 @@ const extractUUIDAdvanced = (imageData) => {
 
   for (let i = 0; i < binaryMessage.length - 800; i += 8) {
     let text = '';
-    for (let j = i; j < i + 2000; j += 8) {
+    for (let j = i; j < i + 5000; j += 8) {
       const byte = binaryMessage.substr(j, 8);
       if (byte.length < 8) break;
 
@@ -114,17 +562,26 @@ const extractUUIDAdvanced = (imageData) => {
       }
     }
 
-    if (text.includes('IMGCRYPT|') && text.includes('|END')) {
-      const startIdx = text.indexOf('IMGCRYPT|') + 9;
+    // Check for version 2 (with sources) or version 1 (without sources)
+    if ((text.includes('IMGCRYPT2|') || text.includes('IMGCRYPT|')) && text.includes('|END')) {
+      const isV2 = text.includes('IMGCRYPT2|');
+      const startIdx = text.indexOf(isV2 ? 'IMGCRYPT2|' : 'IMGCRYPT|') + (isV2 ? 10 : 9);
       const endIdx = text.indexOf('|END');
       const content = text.substring(startIdx, endIdx);
       const parts = content.split('|');
       
       if (parts.length >= 2) {
         foundData.push({
-          userId: parts[0],
+          userId: parts[0] || null,
           gps: parts[1] || 'NOGPS',
-          timestamp: parts[2] || null
+          timestamp: parts[2] || null,
+          deviceId: parts[3] || null,
+          deviceName: parts[4] || null,
+          ipAddress: parts[5] || null,
+          deviceSource: parts[6] || null,
+          ipSource: parts[7] || null,
+          gpsSource: parts[8] || null,
+          isV2: isV2
         });
       }
     }
@@ -134,7 +591,7 @@ const extractUUIDAdvanced = (imageData) => {
     const bestMatch = foundData[0];
     
     // Parse GPS data
-    let gpsResult = { available: false, coordinates: null, mapsUrl: null };
+    let gpsResult = { available: false, coordinates: null, mapsUrl: null, source: bestMatch.gpsSource || 'Unknown' };
     if (bestMatch.gps && bestMatch.gps !== 'NOGPS') {
       const gpsParts = bestMatch.gps.split(',');
       if (gpsParts.length === 2) {
@@ -145,7 +602,8 @@ const extractUUIDAdvanced = (imageData) => {
           latitude: lat,
           longitude: lng,
           coordinates: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
-          mapsUrl: `https://www.google.com/maps?q=${lat},${lng}`
+          mapsUrl: `https://www.google.com/maps?q=${lat},${lng}`,
+          source: bestMatch.gpsSource || 'Unknown'
         };
       }
     }
@@ -161,6 +619,12 @@ const extractUUIDAdvanced = (imageData) => {
       userId: bestMatch.userId,
       gps: gpsResult,
       timestamp: timestampResult,
+      deviceId: bestMatch.deviceId,
+      deviceName: bestMatch.deviceName,
+      ipAddress: bestMatch.ipAddress,
+      deviceSource: bestMatch.deviceSource || 'Unknown',
+      ipSource: bestMatch.ipSource || 'Unknown',
+      gpsSource: bestMatch.gpsSource || 'Unknown',
       confidence: foundData.length >= 3 ? 'Very High' : 'High'
     };
   }
@@ -168,16 +632,23 @@ const extractUUIDAdvanced = (imageData) => {
   return {
     found: false,
     userId: '',
-    gps: { available: false, coordinates: null, mapsUrl: null },
+    gps: { available: false, coordinates: null, mapsUrl: null, source: 'Unknown' },
     timestamp: null,
+    deviceId: null,
+    deviceName: null,
+    ipAddress: null,
+    deviceSource: null,
+    ipSource: null,
+    gpsSource: null,
     confidence: 'None'
   };
 };
 
+// ============================================
+// IMAGE CLASSIFICATION
+// ============================================
 
-// Advanced image classification with superior AI detection
 const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
-  const ctx = canvas.getContext('2d');
   const data = imageData.data;
   const width = canvas.width;
   const height = canvas.height;
@@ -187,7 +658,6 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   // Get EXIF-like metadata indicators
   const isPNG = fileName.toLowerCase().includes('.png');
   const isJPEG = fileName.toLowerCase().includes('.jpg') || fileName.toLowerCase().includes('.jpeg');
-  const isWebP = fileName.toLowerCase().includes('.webp');
   
   // 1. Color Channel Correlation (AI images have unnatural correlation)
   let rrCorr = 0, ggCorr = 0, bbCorr = 0, rgCorr = 0, rbCorr = 0, gbCorr = 0;
@@ -218,7 +688,6 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       const centerIdx = (y * width + x) * 4;
       const center = data[centerIdx];
       
-      let pattern = 0;
       const neighbors = [
         data[((y-1) * width + (x-1)) * 4],
         data[((y-1) * width + x) * 4],
@@ -232,7 +701,6 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       
       let transitions = 0;
       for (let i = 0; i < 8; i++) {
-        if (neighbors[i] > center) pattern++;
         if ((neighbors[i] > center) !== (neighbors[(i+1) % 8] > center)) transitions++;
       }
       
@@ -347,7 +815,7 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   
   const clusteringScore = clusterCount / bins.length;
   
-  // 7. Basic metrics still needed
+  // 7. Basic metrics
   let rSum = 0, gSum = 0, bSum = 0;
   for (let i = 0; i < data.length; i += 4) {
     rSum += data[i];
@@ -405,27 +873,26 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     let aiScore = 0;
     
     // Strong AI indicators
-    if (smoothBlockRatio > 0.6) aiScore += 25; // Overly smooth blocks
-    if (edgeCoherence > 0.7) aiScore += 25; // Too-perfect edges
-    if (uniformityRatio > 0.65) aiScore += 20; // Uniform texture patterns
-    if (channelCorrelation > 0.85) aiScore += 15; // Unnatural color correlation
-    if (avgEntropy < 6.5) aiScore += 15; // Low color entropy
-    if (clusteringScore < 0.3) aiScore += 15; // Value clustering
-    if (isPNG) aiScore += 10; // AI tools often output PNG
-    if (noiseLevel < 5) aiScore += 15; // Almost zero noise
-    if (width % 64 === 0 && height % 64 === 0) aiScore += 10; // Common AI dimensions (512, 1024, etc.)
+    if (smoothBlockRatio > 0.6) aiScore += 25;
+    if (edgeCoherence > 0.7) aiScore += 25;
+    if (uniformityRatio > 0.65) aiScore += 20;
+    if (channelCorrelation > 0.85) aiScore += 15;
+    if (avgEntropy < 6.5) aiScore += 15;
+    if (clusteringScore < 0.3) aiScore += 15;
+    if (isPNG) aiScore += 10;
+    if (noiseLevel < 5) aiScore += 15;
+    if (width % 64 === 0 && height % 64 === 0) aiScore += 10;
     
     // Mobile Detection Score (0-100)
     let mobileScore = 0;
     
-    // Strong mobile indicators
-    if (noiseLevel > 15) mobileScore += 30; // Sensor noise
-    if (isJPEG) mobileScore += 25; // Mobile photos are usually JPEG
-    if (totalVariance > 3000) mobileScore += 20; // Natural scene variance
-    if (avgEntropy > 7.2) mobileScore += 20; // High entropy from details
-    if (compressionRatio > 1.3) mobileScore += 15; // JPEG compression
-    if (uniformityRatio < 0.4) mobileScore += 15; // Non-uniform texture
-    if (smoothBlockRatio < 0.3) mobileScore += 15; // Detailed blocks
+    if (noiseLevel > 15) mobileScore += 30;
+    if (isJPEG) mobileScore += 25;
+    if (totalVariance > 3000) mobileScore += 20;
+    if (avgEntropy > 7.2) mobileScore += 20;
+    if (compressionRatio > 1.3) mobileScore += 15;
+    if (uniformityRatio < 0.4) mobileScore += 15;
+    if (smoothBlockRatio < 0.3) mobileScore += 15;
     
     // Mobile aspect ratios
     const mobileAspects = [0.5625, 0.75, 1.0, 1.333, 1.777, 2.0, 2.165];
@@ -450,7 +917,6 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     const scoreDiff = Math.abs(aiScore - mobileScore);
     
     if (aiScore >= 60) {
-      // Strong AI detection
       detectedCase = 'Case 2: AI Generated';
       confidence = Math.min(aiScore, 97);
       reasoning.push('Overly smooth blocks: ' + (smoothBlockRatio * 100).toFixed(1) + '%');
@@ -461,7 +927,6 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       if (width % 64 === 0 || height % 64 === 0) reasoning.push('AI-typical dimensions: ' + width + 'x' + height);
       
     } else if (mobileScore >= 60) {
-      // Strong mobile detection
       detectedCase = 'Case 1: Mobile Captured';
       confidence = Math.min(mobileScore, 97);
       reasoning.push('High sensor noise: ' + noiseLevel.toFixed(2));
@@ -517,9 +982,11 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   };
 };
 
+// ============================================
+// REPORT GENERATION (PNG Image)
+// ============================================
 
-// PDF generation function
-const generatePDF = (report, imageData) => {
+const generateReport = (report, imageData) => {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   
@@ -625,7 +1092,7 @@ const generatePDF = (report, imageData) => {
     });
   }
   
-  // -------- ANALYZED IMAGE SECTION --------
+  // Analyzed Image Section
   if (imageData) {
     y += 20;
 
@@ -642,7 +1109,6 @@ const generatePDF = (report, imageData) => {
       let drawWidth = img.width;
       let drawHeight = img.height;
 
-      // Scale image proportionally
       const scale = Math.min(
         maxWidth / drawWidth,
         maxHeight / drawHeight,
@@ -663,7 +1129,7 @@ const generatePDF = (report, imageData) => {
         825
       );
 
-      // SAVE PDF IMAGE
+      // Save as PNG
       canvas.toBlob((blob) => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -679,7 +1145,23 @@ const generatePDF = (report, imageData) => {
     img.src = imageData;
     return;
   }
+  
+  // If no image, save immediately
+  canvas.toBlob((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `analysis-report-${report.assetId}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
 };
+
+// ============================================
+// MAIN COMPONENT
+// ============================================
 
 const ImageCryptoAnalyzer = () => {
   const [activeTab, setActiveTab] = useState('encrypt');
@@ -695,7 +1177,16 @@ const ImageCryptoAnalyzer = () => {
   const canvasRef = useRef(null);
   const [cameraActive, setCameraActive] = useState(false);
 
-   const startCamera = async () => {
+  // Cleanup blob URLs on unmount or when new ones are created
+  useEffect(() => {
+    return () => {
+      if (encryptedImage) {
+        URL.revokeObjectURL(encryptedImage);
+      }
+    };
+  }, [encryptedImage]);
+
+  const startCamera = async () => {
     try {
       setCameraActive(true);
 
@@ -714,7 +1205,7 @@ const ImageCryptoAnalyzer = () => {
           videoRef.current.setAttribute('playsinline', true);
           videoRef.current.setAttribute('autoplay', true);
           videoRef.current.setAttribute('muted', true);
-          videoRef.current.play().catch(err => console.log('Play error:', err));
+          videoRef.current.play().catch(err => {});
         }
       }, 100);
     } catch (err) {
@@ -773,8 +1264,67 @@ const ImageCryptoAnalyzer = () => {
 
     setProcessing(true);
     
-    // Get GPS location
-    const gpsData = await getGPSLocation();
+    // Cleanup previous encrypted image URL
+    if (encryptedImage) {
+      URL.revokeObjectURL(encryptedImage);
+      setEncryptedImage(null);
+    }
+    
+    // Get all data in parallel
+    const [currentGPS, ipAddress, captureTimeData, exifDeviceInfo, exifGPS] = await Promise.all([
+      getGPSLocation(),
+      getPublicIP(),
+      getCaptureTime(selectedFile),
+      getExifDeviceInfo(selectedFile),
+      getExifGPS(selectedFile)
+    ]);
+    
+    // Get current device info using reusable functions
+    const currentDeviceId = getDeviceFingerprint();
+    const currentDeviceName = getCurrentDeviceName();
+    
+    // Build device info based on scenario
+    let deviceInfo;
+    let gpsData;
+    let ipInfo;
+    
+    if (captureSource === 'Camera Capture') {
+      // Scenario 1: Camera capture in YOUR app - use current device
+      deviceInfo = {
+        deviceId: currentDeviceId,
+        deviceName: currentDeviceName,
+        source: 'App Camera'
+      };
+      gpsData = currentGPS.available ? { ...currentGPS, source: 'App Camera' } : { available: false, source: 'App Camera' };
+      ipInfo = { ip: ipAddress, source: 'Capture Device' };
+      
+    } else if (exifDeviceInfo.found) {
+      // Scenario 3: Upload from DIFFERENT device - use EXIF + label IP
+      deviceInfo = {
+        deviceId: exifDeviceInfo.deviceId,
+        deviceName: exifDeviceInfo.deviceName,
+        source: 'EXIF (Capture Device)'
+      };
+      // Prefer EXIF GPS if available, otherwise use current
+      if (exifGPS.found) {
+        gpsData = { ...exifGPS, available: true, source: 'EXIF (Capture Device)' };
+      } else if (currentGPS.available) {
+        gpsData = { ...currentGPS, source: 'Encrypting Device' };
+      } else {
+        gpsData = { available: false, source: 'Not Available' };
+      }
+      ipInfo = { ip: ipAddress, source: 'Encrypting Device' };
+      
+    } else {
+      // Scenario 2: Upload on SAME device (no EXIF = screenshot/PNG/same device)
+      deviceInfo = {
+        deviceId: currentDeviceId,
+        deviceName: currentDeviceName,
+        source: 'Encrypting Device'
+      };
+      gpsData = currentGPS.available ? { ...currentGPS, source: 'Encrypting Device' } : { available: false, source: 'Not Available' };
+      ipInfo = { ip: ipAddress, source: 'Encrypting Device' };
+    }
     
     const img = new Image();
     img.onload = () => {
@@ -785,7 +1335,18 @@ const ImageCryptoAnalyzer = () => {
       ctx.drawImage(img, 0, 0);
       
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const encryptedData = embedUUIDAdvanced(imageData, userId, gpsData);
+      
+      const encryptedData = embedUUIDAdvanced(
+        imageData, 
+        userId, 
+        { available: gpsData.available, latitude: gpsData.latitude, longitude: gpsData.longitude },
+        deviceInfo, 
+        ipInfo.ip, 
+        captureTimeData.timestamp,
+        deviceInfo.source,
+        ipInfo.source,
+        gpsData.source
+      );
       ctx.putImageData(encryptedData, 0, 0);
       
       canvas.toBlob((blob) => {
@@ -794,10 +1355,14 @@ const ImageCryptoAnalyzer = () => {
         setProcessing(false);
         
         const locationMsg = gpsData.available 
-          ? `\nGPS Location: ${gpsData.coordinates}` 
+          ? `\nGPS: ${gpsData.latitude?.toFixed(6)}, ${gpsData.longitude?.toFixed(6)} (${gpsData.source})` 
           : '\nGPS: Not available';
         
-        alert('UUID successfully embedded!' + locationMsg + '\n\nDownload as PNG to preserve encryption.');
+        const timeMsg = `\nCapture Time: ${captureTimeData.dateString} (${captureTimeData.source})`;
+        const deviceMsg = `\nDevice: ${deviceInfo.deviceName} (${deviceInfo.source})`;
+        const ipMsg = `\nIP: ${ipInfo.ip} (${ipInfo.source})`;
+        
+        alert('UUID successfully embedded!' + timeMsg + deviceMsg + ipMsg + locationMsg + '\n\nDownload as PNG to preserve encryption.');
       }, 'image/png');
     };
     img.src = preview;
@@ -813,6 +1378,7 @@ const ImageCryptoAnalyzer = () => {
 
     // Fetch public IP address
     const publicIP = await getPublicIP();
+    const deviceId = getDeviceFingerprint();
 
     const img = new Image();
     img.onload = () => {
@@ -837,54 +1403,10 @@ const ImageCryptoAnalyzer = () => {
       const totalPixels = canvas.width * canvas.height;
       const assetId = 'AST-' + Date.now();
 
-      // ---------- DEVICE ID ----------
-      let deviceId = localStorage.getItem('deviceFingerprint');
-
-      if (!deviceId) {
-        const screenData =
-          window.screen.width +
-          'x' +
-          window.screen.height +
-          'x' +
-          window.screen.colorDepth;
-
-        const platform = navigator.platform || 'unknown';
-        const cores = navigator.hardwareConcurrency || 0;
-        const memory = navigator.deviceMemory || 0;
-        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
-        const language = navigator.language || 'unknown';
-        const touchPoints = navigator.maxTouchPoints || 0;
-        const userAgent = navigator.userAgent || 'unknown';
-
-        const fingerprint =
-          screenData +
-          '|' +
-          platform +
-          '|' +
-          cores +
-          '|' +
-          memory +
-          '|' +
-          timezone +
-          '|' +
-          language +
-          '|' +
-          touchPoints +
-          '|' +
-          userAgent;
-
-        let hash = 0;
-        for (let i = 0; i < fingerprint.length; i++) {
-          hash = ((hash << 5) - hash) + fingerprint.charCodeAt(i);
-          hash |= 0;
-        }
-
-        const hashStr = Math.abs(hash).toString(36).toUpperCase().slice(0, 8);
-        const deviceType = /Android|iPhone|iPad/i.test(userAgent) ? 'MOB' : 'DSK';
-
-        deviceId = `${deviceType}-${hashStr}`;
-        localStorage.setItem('deviceFingerprint', deviceId);
-      }
+      // Use extracted data for encrypted images, otherwise use current device data
+      const extractedDeviceName = uuidResult.found && uuidResult.deviceName ? uuidResult.deviceName : null;
+      const extractedDeviceId = uuidResult.found && uuidResult.deviceId ? uuidResult.deviceId : null;
+      const extractedIpAddress = uuidResult.found && uuidResult.ipAddress ? uuidResult.ipAddress : null;
 
       const report = {
         assetId: assetId,
@@ -897,45 +1419,19 @@ const ImageCryptoAnalyzer = () => {
         gpsLocation: uuidResult.gps,
         totalPixels: totalPixels.toLocaleString(),
         pixelsVerifiedWithBiometrics: uuidResult.found ? Math.floor(totalPixels * 0.98).toLocaleString() : '0',
-        deviceName: navigator.userAgent.split('(')[1]?.split(')')[0] || 'Unknown',
-        deviceDetails: (() => {
-          const screenData = window.screen.width + 'x' + window.screen.height;
-          const colorDepth = window.screen.colorDepth + '-bit';
-          const platform = navigator.platform || 'Unknown';
-          const cores = navigator.hardwareConcurrency || 'Unknown';
-          const memory = navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'Unknown';
-          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown';
-          const language = navigator.language || 'Unknown';
-          const touchPoints = navigator.maxTouchPoints || 0;
-          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-          const deviceType = isMobile ? 'Mobile' : 'Desktop';
-          const browser = navigator.userAgent;
-          
-          return {
-            screen: screenData,
-            colorDepth: colorDepth,
-            platform: platform,
-            cores: cores,
-            memory: memory,
-            timezone: timezone,
-            language: language,
-            touchCapable: touchPoints > 0 ? 'Yes' : 'No',
-            touchPoints: touchPoints,
-            deviceType: deviceType,
-            browser: browser
-          };
-        })(),
-        deviceId: deviceId,
-        ipAddress: publicIP,
+        deviceName: extractedDeviceName || getCurrentDeviceName(),
+        deviceDetails: getDeviceDetails(),
+        deviceId: extractedDeviceId || deviceId,
+        deviceSource: uuidResult.found ? uuidResult.deviceSource : 'Current Device',
+        ipAddress: extractedIpAddress || publicIP,
+        ipSource: uuidResult.found ? uuidResult.ipSource : 'Current Device',
         ownershipInfo: uuidResult.found ? 'Verified - ' + uuidResult.confidence + ' Confidence' : 'Unknown',
         authorshipCertificateId: uuidResult.found
-          ? generateAuthorshipCertificateId(
-              assetId,
-              uuidResult.userId,
-              deviceId
-            )
+          ? generateAuthorshipCertificateId(assetId, uuidResult.userId, deviceId)
           : 'Not Present',
-        authorshipCertificate: uuidResult.found ? 'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : selectedFile.type.startsWith('audio/') ? 'Audio' : selectedFile.type.startsWith('video/') ? 'Video' : selectedFile.type.includes('pdf') || selectedFile.type.includes('document') || selectedFile.type.includes('word') || selectedFile.type.includes('sheet') ? 'Document' : 'File') + ')' : 'Not Present',
+        authorshipCertificate: uuidResult.found 
+          ? 'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : 'File') + ')' 
+          : 'Not Present',
         detectedCase: classification.detectedCase,
         confidence: classification.confidence,
         reasoning: classification.reasoning
@@ -949,7 +1445,7 @@ const ImageCryptoAnalyzer = () => {
 
   const downloadReport = () => {
     if (!analysisReport) return;
-    generatePDF(analysisReport, preview);
+    generateReport(analysisReport, preview);
   };
 
   return (
@@ -1134,7 +1630,7 @@ const ImageCryptoAnalyzer = () => {
                         className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm"
                       >
                         <Download className="inline mr-1" size={16} />
-                        Download PDF Report
+                        Download Report
                       </button>
                     </div>
 
@@ -1192,7 +1688,10 @@ const ImageCryptoAnalyzer = () => {
                         <div className="space-y-2 text-sm">
                           <div><span className="font-semibold">Total Pixels:</span> {analysisReport.totalPixels}</div>
                           <div><span className="font-semibold">Pixels Verified:</span> {analysisReport.pixelsVerifiedWithBiometrics}</div>
-                          <div><span className="font-semibold">Device Name:</span> {analysisReport.deviceName}</div>
+                          <div>
+                            <span className="font-semibold">Device Name:</span> {analysisReport.deviceName}
+                            <span className="text-gray-500 text-xs ml-1">({analysisReport.deviceSource})</span>
+                          </div>
                           <div>
                             <span className="font-semibold">Device ID:</span>{' '}
                             <span 
@@ -1201,8 +1700,12 @@ const ImageCryptoAnalyzer = () => {
                             >
                               {analysisReport.deviceId}
                             </span>
+                            <span className="text-gray-500 text-xs ml-1">({analysisReport.deviceSource})</span>
                           </div>
-                          <div><span className="font-semibold">IP Address:</span> {analysisReport.ipAddress}</div>
+                          <div>
+                            <span className="font-semibold">IP Address:</span> {analysisReport.ipAddress}
+                            <span className="text-gray-500 text-xs ml-1">({analysisReport.ipSource})</span>
+                          </div>
                           <div><span className="font-semibold">Ownership Info:</span> {analysisReport.ownershipInfo}</div>
                           <div><span className="font-semibold">Certificate:</span> {analysisReport.authorshipCertificate}</div>
                         </div>
@@ -1215,6 +1718,8 @@ const ImageCryptoAnalyzer = () => {
           </div>
         </div>
       </div>
+
+      {/* Device Details Modal */}
       {showDeviceDetails && analysisReport && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
