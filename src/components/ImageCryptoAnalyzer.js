@@ -1095,7 +1095,9 @@ const generateReport = (report, imageData) => {
     ['Device ID:', report.deviceId],
     ['IP Address:', report.ipAddress],
     ['Ownership Info:', report.ownershipInfo],
-    ['Certificate:', report.authorshipCertificate]
+    ['Certificate:', report.authorshipCertificate],
+    ['Rotation:', report.rotationMessage || 'Not detected']  // ✅ ADD THIS LINE
+
   ];
   
   technicalFields.forEach(function(field) {
@@ -1195,9 +1197,10 @@ const generateReport = (report, imageData) => {
 // ============================================
 // MAIN COMPONENT
 // ============================================
-
 const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const navigate = useNavigate();
+  
+  // ✅ MOVE ALL HOOKS TO THE TOP - BEFORE ANY CONDITIONAL LOGIC
   const [activeTab, setActiveTab] = useState('encrypt');
   const [selectedFile, setSelectedFile] = useState(null);
   const [captureSource, setCaptureSource] = useState('Browser Upload');
@@ -1210,7 +1213,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [cameraActive, setCameraActive] = useState(false);
-  const [facingMode, setFacingMode] = useState('environment'); // 'user' = front, 'environment' = back
+  const [facingMode, setFacingMode] = useState('environment');
   const [canSwitchCamera, setCanSwitchCamera] = useState(false);
 
   // Cleanup blob URLs on unmount or when new ones are created
@@ -1221,6 +1224,25 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       }
     };
   }, [encryptedImage]);
+  
+  // ✅ NOW the safety check - AFTER all hooks
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
+    }
+  }, [user, navigate]);
+  
+  // ✅ NOW the early return - AFTER all hooks
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">Redirecting to login...</h2>
+          <p className="text-gray-600">Please wait</p>
+        </div>
+      </div>
+    );
+  }
 
   const startCamera = async () => {
   try {
@@ -1477,7 +1499,87 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     };
     img.src = preview;
   };
+  
+// Rotate canvas by specified degrees (90, 180, 270)
+const rotateCanvas = (sourceCanvas, degrees) => {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  
+  // For 90° and 270°, swap width and height
+  if (degrees === 90 || degrees === 270) {
+    canvas.width = sourceCanvas.height;
+    canvas.height = sourceCanvas.width;
+  } else {
+    canvas.width = sourceCanvas.width;
+    canvas.height = sourceCanvas.height;
+  }
+  
+  // Move to center, rotate, draw
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((degrees * Math.PI) / 180);
+  ctx.drawImage(sourceCanvas, -sourceCanvas.width / 2, -sourceCanvas.height / 2);
+  
+  return canvas;
+};
 
+// Try extracting UUID from all 4 rotations
+const extractUUIDWithRotation = (sourceCanvas) => {
+  const rotations = [0, 90, 180, 270];
+  
+  for (const degrees of rotations) {
+    let canvas;
+    
+    if (degrees === 0) {
+      canvas = sourceCanvas;
+    } else {
+      canvas = rotateCanvas(sourceCanvas, degrees);
+    }
+    
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const uuidResult = extractUUIDAdvanced(imageData);
+    
+    if (uuidResult.found) {
+      return {
+        ...uuidResult,
+        rotationDetected: degrees,
+        rotationMessage: degrees === 0 
+          ? 'Original orientation' 
+          : `Image was rotated ${degrees}° clockwise`
+      };
+    }
+  }
+  
+  // No UUID found in any rotation
+  return {
+    found: false,
+    rotationDetected: null,
+    rotationMessage: 'No rotation detected'
+  };
+};
+ const saveReportToLocalStorage = (report, userInfo) => {
+  try {
+    const existingReports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+    
+    const enhancedReport = {
+      ...report,
+      reportId: `RPT-${Date.now()}`,
+      createdAt: Date.now(),
+      userName: userInfo?.name || 'Unknown',
+      userEmail: userInfo?.email || null,
+      status: report.ownershipInfo.includes('Verified') ? 'Verified' : 'Unknown',
+      platformCopies: 0
+    };
+    
+    existingReports.unshift(enhancedReport);
+    const limitedReports = existingReports.slice(0, 1000);
+    localStorage.setItem('analysisReports', JSON.stringify(limitedReports));
+    
+    console.log('Report saved successfully:', enhancedReport.reportId);
+  } catch (error) {
+    console.error('Error saving report:', error);
+  }
+};
   const analyzeImage = async () => {
     if (!selectedFile) {
       alert('Please select an image to analyze');
@@ -1500,7 +1602,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       
-      const uuidResult = extractUUIDAdvanced(imageData);
+      const uuidResult = extractUUIDWithRotation(canvas);
       
       const classification = classifyImage(
         canvas, 
@@ -1547,10 +1649,13 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
           : 'Not Present',
         detectedCase: classification.detectedCase,
         confidence: classification.confidence,
-        reasoning: classification.reasoning
+        reasoning: classification.reasoning,
+		rotationDetected: uuidResult.rotationDetected,
+        rotationMessage: uuidResult.rotationMessage
       };
 
       setAnalysisReport(report);
+	  saveReportToLocalStorage(report, user);
       setProcessing(false);
     };
     img.src = preview;
@@ -1795,17 +1900,21 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
                         <p className="font-bold text-yellow-900">{analysisReport.detectedCase}</p>
                         <p className="text-yellow-800 text-sm">Confidence: {analysisReport.confidence}%</p>
                       </div>
-
-                      {analysisReport.reasoning && analysisReport.reasoning.length > 0 && (
-                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                          <h4 className="font-semibold text-blue-900 mb-2">Classification Reasoning</h4>
-                          <ul className="text-blue-800 text-sm space-y-1">
-                            {analysisReport.reasoning.map((reason, idx) => (
-                              <li key={idx}>• {reason}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+                              
+                      {analysisReport.rotationDetected !== null && analysisReport.rotationDetected !== 0 && (
+                        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
+                         <div className="flex items-center gap-2">
+                          <span className="text-2xl">🔄</span>
+                         <div>
+                            <p className="font-bold text-blue-900">Rotation Detected</p>
+                            <p className="text-blue-800 text-sm">{analysisReport.rotationMessage}</p>
+                            <p className="text-blue-700 text-xs mt-1">
+                              The encrypted data was successfully recovered despite rotation.
+                            </p>
+                         </div>
+                       </div>
+                     </div>
+                   )}
 
                       <div className="grid md:grid-cols-2 gap-4">
                         <div className="bg-white p-4 rounded-lg border">
