@@ -1,142 +1,199 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-
 import Login from './components/Login';
 import Register from './components/Register';
-import AdminDashboard from './components/AdminDashboard';
 import UserDashboard from './components/UserDashboard';
+import AdminDashboard from './components/AdminDashboard';
 import ImageCryptoAnalyzer from './components/ImageCryptoAnalyzer';
-import './App.css';
+import AssetDetailPage from './components/AssetDetailPage';
+import ImageTravelHistory from './components/ImageTravelHistory';
+import PublicVerifyPage from './components/PublicVerifyPage';
 
-// Admin credentials
-const ADMIN_CREDENTIALS = {
-  username: 'admin',
-  password: 'admin123'
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// STORAGE KEYS
+// ─────────────────────────────────────────────────────────────────────────────
+const USERS_KEY = 'app-users';
+const SESSION_KEY = 'app-session';
 
+// Default admin credentials
+const ADMIN = { username: 'admin', password: 'admin123' };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// App
+// ─────────────────────────────────────────────────────────────────────────────
 function App() {
-  const [user, setUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [userRole, setUserRole] = useState(null); // 'admin' | 'user'
   const [users, setUsers] = useState([]);
 
+  // Rehydrate session on mount
   useEffect(() => {
-    const storedUsers = localStorage.getItem('users');
-    if (storedUsers) setUsers(JSON.parse(storedUsers));
+    const stored = localStorage.getItem(USERS_KEY);
+    if (stored) setUsers(JSON.parse(stored));
 
-    const currentUser = localStorage.getItem('currentUser');
-    if (currentUser) setUser(JSON.parse(currentUser));
+    const session = localStorage.getItem(SESSION_KEY);
+    if (session) {
+      const { user, role } = JSON.parse(session);
+      setCurrentUser(user);
+      setUserRole(role);
+    }
   }, []);
 
-  useEffect(() => {
-    if (users.length > 0) {
-      localStorage.setItem('users', JSON.stringify(users));
+  // ── Auth handlers ──────────────────────────────────────────────────────────
+
+  const handleLogin = (credentials, isAdmin) => {
+    if (isAdmin) {
+      if (credentials.username === ADMIN.username && credentials.password === ADMIN.password) {
+        const adminUser = { username: ADMIN.username };
+        setCurrentUser(adminUser);
+        setUserRole('admin');
+        localStorage.setItem(SESSION_KEY, JSON.stringify({ user: adminUser, role: 'admin' }));
+        return { success: true, role: 'admin' };
+      }
+      return { success: false, message: 'Invalid admin credentials' };
     }
-  }, [users]);
+
+    // Regular user login
+    const stored = localStorage.getItem(USERS_KEY);
+    const allUsers = stored ? JSON.parse(stored) : [];
+    const found = allUsers.find(
+      u => u.email.toLowerCase() === credentials.email.toLowerCase() && u.password === credentials.password
+    );
+
+    if (found) {
+      setCurrentUser(found);
+      setUserRole('user');
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ user: found, role: 'user' }));
+      return { success: true, role: 'user' };
+    }
+    return { success: false, message: 'Invalid email or password' };
+  };
 
   const handleRegister = (userData) => {
-    const existingUser = users.find(u => u.email === userData.email);
-    if (existingUser) {
-      return { success: false, message: 'User with this email already exists' };
+    const stored = localStorage.getItem(USERS_KEY);
+    const allUsers = stored ? JSON.parse(stored) : [];
+
+    const exists = allUsers.find(u => u.email.toLowerCase() === userData.email.toLowerCase());
+    if (exists) {
+      return { success: false, message: 'An account with this email already exists' };
     }
 
     const newUser = {
       id: Date.now(),
-      ...userData,
-      role: 'user',
+      name: userData.name,
+      email: userData.email,
+      password: userData.password,
       createdAt: new Date().toISOString()
     };
 
-    setUsers([...users, newUser]);
-    return { success: true };
-  };
+    const updated = [...allUsers, newUser];
+    localStorage.setItem(USERS_KEY, JSON.stringify(updated));
+    setUsers(updated);
 
-  const handleLogin = (credentials, isAdmin) => {
-    if (isAdmin) {
-      if (
-        credentials.username === ADMIN_CREDENTIALS.username &&
-        credentials.password === ADMIN_CREDENTIALS.password
-      ) {
-        const adminUser = { username: 'admin', role: 'admin' };
-        setUser(adminUser);
-        localStorage.setItem('currentUser', JSON.stringify(adminUser));
-        return { success: true, role: 'admin' };
-      }
-      return { success: false };
-    }
-
-    const foundUser = users.find(
-      u => u.email === credentials.email && u.password === credentials.password
-    );
-
-    if (foundUser) {
-      const session = {
-        id: foundUser.id,
-        name: foundUser.name,
-        email: foundUser.email,
-        role: 'user'
-      };
-      setUser(session);
-      localStorage.setItem('currentUser', JSON.stringify(session));
-      return { success: true, role: 'user' };
-    }
-
-    return { success: false };
+    return { success: true, message: 'Account created successfully! Please log in.' };
   };
 
   const handleLogout = () => {
-    setUser(null);
-    localStorage.removeItem('currentUser');
+    setCurrentUser(null);
+    setUserRole(null);
+    localStorage.removeItem(SESSION_KEY);
   };
 
-  const ProtectedRoute = ({ children, allowedRole }) => {
-    if (!user) return <Navigate to="/login" replace />;
-    if (allowedRole && user.role !== allowedRole) {
-      return <Navigate to="/login" replace />;
+  // ── Route guards ───────────────────────────────────────────────────────────
+
+  const RequireAuth = ({ children, role }) => {
+    if (!currentUser) return <Navigate to="/login" replace />;
+    if (role && userRole !== role) {
+      return <Navigate to={userRole === 'admin' ? '/admin/dashboard' : '/user/dashboard'} replace />;
     }
     return children;
   };
 
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Navigate to="/login" replace />} />
-
+        {/* Public — no auth required */}
         <Route
           path="/login"
-          element={user ? <Navigate to="/user/dashboard" /> : <Login onLogin={handleLogin} />}
+          element={
+            currentUser
+              ? <Navigate to={userRole === 'admin' ? '/admin/dashboard' : '/user/dashboard'} replace />
+              : <Login onLogin={handleLogin} />
+          }
         />
-
         <Route
           path="/register"
-          element={<Register onRegister={handleRegister} />}
-        />
-
-        <Route
-          path="/admin/dashboard"
           element={
-            <ProtectedRoute allowedRole="admin">
-              <AdminDashboard user={user} onLogout={handleLogout} users={users} />
-            </ProtectedRoute>
+            currentUser
+              ? <Navigate to="/user/dashboard" replace />
+              : <Register onRegister={handleRegister} />
           }
         />
 
+        {/* Public verification report — shareable, no login needed */}
+        <Route path="/public/verify" element={<PublicVerifyPage />} />
+
+        {/* User routes */}
         <Route
           path="/user/dashboard"
           element={
-            <ProtectedRoute allowedRole="user">
-              <UserDashboard user={user} onLogout={handleLogout} />
-            </ProtectedRoute>
+            <RequireAuth role="user">
+              <UserDashboard user={currentUser} onLogout={handleLogout} />
+            </RequireAuth>
           }
         />
 
+        {/* Shared: Image Analyzer (accessible by both roles) */}
         <Route
           path="/analyzer"
           element={
-            <ProtectedRoute>
-              <ImageCryptoAnalyzer />
-            </ProtectedRoute>
+            <RequireAuth>
+              <ImageCryptoAnalyzer user={currentUser} />
+            </RequireAuth>
           }
         />
 
+        {/* Admin routes */}
+        <Route
+          path="/admin/dashboard"
+          element={
+            <RequireAuth role="admin">
+              <AdminDashboard user={currentUser} onLogout={handleLogout} users={users} />
+            </RequireAuth>
+          }
+        />
+
+        {/* Asset Detail — navigated to from AssetTrackingPage */}
+        <Route
+          path="/admin/track/:assetId"
+          element={
+            <RequireAuth role="admin">
+              <AssetDetailPage user={currentUser} />
+            </RequireAuth>
+          }
+        />
+
+        {/* Image Travel History — navigated to from AssetDetailPage */}
+        <Route
+          path="/admin/track/:assetId/history"
+          element={
+            <RequireAuth role="admin">
+              <ImageTravelHistory />
+            </RequireAuth>
+          }
+        />
+
+        {/* Default redirect */}
+        <Route
+          path="/"
+          element={
+            currentUser
+              ? <Navigate to={userRole === 'admin' ? '/admin/dashboard' : '/user/dashboard'} replace />
+              : <Navigate to="/login" replace />
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>

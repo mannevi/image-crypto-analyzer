@@ -835,3 +835,135 @@
     padding: 16px;
   }
 }
+/* Additional styles for AssetDetailPage working buttons */
+
+/* Flag Warning */
+.flag-warning {
+  display: flex;
+  gap: 20px;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, #fff5f5, #fed7d7);
+  border: 2px solid #fc8181;
+  border-radius: 12px;
+  margin-bottom: 24px;
+}
+
+.flag-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.flag-content {
+  flex: 1;
+}
+
+.flag-content h3 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: #742a2a;
+  font-weight: 700;
+}
+
+.flag-content p {
+  margin: 6px 0;
+  font-size: 14px;
+  color: #742a2a;
+  line-height: 1.5;
+}
+
+.flag-content strong {
+  font-weight: 600;
+}
+
+/* Status Badge Flagged */
+.status-badge.flagged {
+  background: #fed7d7;
+  color: #742a2a;
+  border: 2px solid #fc8181;
+}
+
+/* View History Button in Sidebar */
+.btn-view-history {
+  width: 100%;
+  padding: 12px;
+  margin-top: 16px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.btn-view-history:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+/* Action Buttons Grid - ensure proper spacing */
+.actions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.reverify-btn {
+  background: linear-gradient(135deg, #48bb78, #38a169);
+  color: white;
+}
+
+.download-btn {
+  background: linear-gradient(135deg, #4299e1, #3182ce);
+  color: white;
+}
+
+.link-btn {
+  background: linear-gradient(135deg, #9f7aea, #805ad5);
+  color: white;
+}
+
+.flag-btn {
+  background: linear-gradient(135deg, #f56565, #e53e3e);
+  color: white;
+}
+
+.travel-history {
+  background: linear-gradient(135deg, #a18cd1, #fbc2eb);
+  color: white;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .actions-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .flag-warning {
+    flex-direction: column;
+  }
+}

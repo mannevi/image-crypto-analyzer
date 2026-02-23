@@ -6,6 +6,231 @@ import { Camera, Upload, FileSearch, Download, AlertCircle, CheckCircle, ArrowLe
 // HELPER FUNCTIONS
 // ============================================
 
+// ============================================
+// STATS TRACKING HELPER  [NEW - from second file]
+// ============================================
+
+const updateForensicsStats = (type, data) => {
+  try {
+    const savedStats = localStorage.getItem('forensicsStats');
+    const stats = savedStats ? JSON.parse(savedStats) : {
+      totalEncrypted: 0,
+      totalAnalyzed: 0,
+      lastActivity: null,
+      lastEncryptedId: null,
+      recentActivities: []
+    };
+
+    if (type === 'encrypted') {
+      stats.totalEncrypted += 1;
+      stats.lastEncryptedId = data.userId;
+    } else if (type === 'analyzed') {
+      stats.totalAnalyzed += 1;
+    }
+
+    stats.lastActivity = new Date().toISOString();
+
+    stats.recentActivities.unshift({
+      type: type,
+      fileName: data.fileName,
+      timestamp: new Date().toISOString(),
+      uuid: data.userId || null
+    });
+
+    if (stats.recentActivities.length > 10) {
+      stats.recentActivities = stats.recentActivities.slice(0, 10);
+    }
+
+    localStorage.setItem('forensicsStats', JSON.stringify(stats));
+
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'forensicsStats',
+      newValue: JSON.stringify(stats),
+      url: window.location.href,
+      storageArea: localStorage
+    }));
+
+    console.log('✅ Dashboard stats updated:', stats);
+  } catch (error) {
+    console.error('❌ Error updating stats:', error);
+  }
+};
+
+// ============================================
+// VAULT STORAGE HELPER  [NEW - from second file]
+// ============================================
+
+const saveToVault = (imageData, fileName, userId, fileSize, imageBlob) => {
+  try {
+    const canvas = document.createElement('canvas');
+    const img = new Image();
+
+    img.onload = () => {
+      const size = 80;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      const scale = Math.max(size / img.width, size / img.height);
+      const x = (size / 2) - (img.width / 2) * scale;
+      const y = (size / 2) - (img.height / 2) * scale;
+
+      ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+
+      const thumbnail = canvas.toDataURL('image/jpeg', 0.4);
+
+      const savedVault = localStorage.getItem('vaultImages');
+      const vault = savedVault ? JSON.parse(savedVault) : [];
+
+      const deviceId = typeof getDeviceFingerprint === 'function'
+        ? getDeviceFingerprint()
+        : 'UNKNOWN';
+
+      const vaultEntry = {
+        id: Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+        fileName: fileName,
+        fileSize: fileSize,
+        userId: userId,
+        dateEncrypted: new Date().toISOString(),
+        status: 'Verified',
+        thumbnail: thumbnail,
+        deviceId: deviceId,
+        gpsLocation: 'Encrypted'
+      };
+
+      vault.unshift(vaultEntry);
+
+      if (vault.length > 20) {
+        vault.splice(20);
+      }
+
+      localStorage.setItem('vaultImages', JSON.stringify(vault));
+
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'vaultImages',
+        newValue: JSON.stringify(vault),
+        url: window.location.href,
+        storageArea: localStorage
+      }));
+
+      console.log('✅ Image saved to vault:', vaultEntry.fileName);
+    };
+
+    img.onerror = () => {
+      console.error('❌ Error creating thumbnail');
+    };
+
+    img.src = imageData;
+
+  } catch (error) {
+    console.error('❌ Error saving to vault:', error);
+  }
+};
+
+// ============================================
+// CERTIFICATE GENERATION HELPER  [NEW - from second file]
+// ============================================
+
+const saveCertificate = (analysisReport, imageData) => {
+  try {
+    const savedCerts = localStorage.getItem('certificates');
+    const certificates = savedCerts ? JSON.parse(savedCerts) : [];
+
+    const certificate = {
+      id: Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+      certificateId: analysisReport.authorshipCertificateId || 'CERT-' + Date.now().toString(36).toUpperCase(),
+      assetId: analysisReport.assetId || 'AST-UNKNOWN',
+      userId: analysisReport.uniqueUserId || 'unknown',
+      dateCreated: new Date().toISOString(),
+      confidence: analysisReport.confidence || 0,
+      status: analysisReport.ownershipInfo || 'Unverified',
+
+      ownershipAtCreation: {
+        assetId: analysisReport.assetId || 'Unknown',
+        authorshipCertificateId: analysisReport.authorshipCertificateId || 'Unknown',
+        uniqueUserId: analysisReport.uniqueUserId || 'Unknown',
+        assetFileSize: analysisReport.assetFileSize || 'Unknown',
+        assetResolution: analysisReport.assetResolution || 'Unknown',
+        userEncryptedResolution: analysisReport.userEncryptedResolution || 'N/A',
+        timeStamp: analysisReport.timestamp ? new Date(analysisReport.timestamp).toLocaleString() : 'Not Available',
+        captureLocation: analysisReport.captureLocationInfo || 'Unknown',
+        gpsLocation: analysisReport.gpsLocation?.available
+          ? `${analysisReport.gpsLocation.coordinates} (${analysisReport.gpsLocation.source || 'Unknown'})`
+          : 'Not Available'
+      },
+
+      technicalDetails: {
+        totalPixels: analysisReport.totalPixels || 'Unknown',
+        pixelsVerified: analysisReport.pixelsVerifiedWithBiometrics || '0',
+        deviceName: analysisReport.deviceName || 'Unknown',
+        deviceId: analysisReport.deviceId || 'Unknown',
+        deviceSource: analysisReport.deviceSource || 'Unknown',
+        ipAddress: analysisReport.ipAddress || 'Unknown',
+        ipSource: analysisReport.ipSource || 'Unknown',
+        ownershipInfo: analysisReport.ownershipInfo || 'Unknown',
+        certificate: analysisReport.authorshipCertificate || 'Not Present',
+        rotationDetected: analysisReport.rotationDetected !== null && analysisReport.rotationDetected !== undefined
+          ? `${analysisReport.rotationDetected}°`
+          : 'Not detected',
+        rotationMessage: analysisReport.rotationMessage || 'Not detected'
+      },
+
+      classificationAnalysis: {
+        detectedCase: analysisReport.detectedCase || 'Unknown',
+        confidence: analysisReport.confidence || 0,
+        reasoning: analysisReport.reasoning || [],
+        metrics: {
+          variance: analysisReport.metrics?.variance || 'N/A',
+          noiseLevel: analysisReport.metrics?.noiseLevel || 'N/A',
+          smoothBlockRatio: analysisReport.metrics?.smoothBlockRatio || 'N/A',
+          edgeCoherence: analysisReport.metrics?.edgeCoherence || 'N/A',
+          uniformityRatio: analysisReport.metrics?.uniformityRatio || 'N/A',
+          entropy: analysisReport.metrics?.entropy || 'N/A',
+          compressionRatio: analysisReport.metrics?.compressionRatio || 'N/A',
+          aspectRatio: analysisReport.metrics?.aspectRatio || 'N/A',
+          channelCorrelation: analysisReport.metrics?.channelCorrelation || 'N/A'
+        }
+      },
+
+      cropInfo: analysisReport.cropInfo || null,
+
+      gpsDetails: {
+        available: analysisReport.gpsLocation?.available || false,
+        latitude: analysisReport.gpsLocation?.latitude || null,
+        longitude: analysisReport.gpsLocation?.longitude || null,
+        coordinates: analysisReport.gpsLocation?.coordinates || null,
+        mapsUrl: analysisReport.gpsLocation?.mapsUrl || null,
+        source: analysisReport.gpsLocation?.source || 'Unknown'
+      },
+
+      deviceDetails: analysisReport.deviceDetails || null,
+      imagePreview: imageData ? imageData.substring(0, 50000) : null
+    };
+
+    certificates.unshift(certificate);
+
+    if (certificates.length > 50) {
+      certificates.splice(50);
+    }
+
+    localStorage.setItem('certificates', JSON.stringify(certificates));
+
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'certificates',
+      newValue: JSON.stringify(certificates),
+      url: window.location.href,
+      storageArea: localStorage
+    }));
+
+    console.log('✅ Certificate generated:', certificate.certificateId);
+
+    return certificate;
+  } catch (error) {
+    console.error('❌ Error saving certificate:', error);
+    return null;
+  }
+};
+
 // IP Address Helper Function
 const getPublicIP = async () => {
   try {
@@ -53,7 +278,7 @@ const getFileFallbackTime = (file) => {
       dateString: new Date(file.lastModified).toLocaleString()
     };
   }
-  
+
   // Last resort: current time
   return {
     timestamp: Date.now(),
@@ -71,7 +296,7 @@ const getCaptureTime = (file) => {
       reader.onload = (e) => {
         try {
           const view = new DataView(e.target.result);
-          
+
           // Check for JPEG marker
           if (view.getUint16(0, false) !== 0xFFD8) {
             resolve(getFileFallbackTime(file));
@@ -92,44 +317,44 @@ const getCaptureTime = (file) => {
                 view.getUint8(offset + 4),
                 view.getUint8(offset + 5)
               );
-              
+
               if (exifHeader === 'Exif') {
                 const tiffOffset = offset + 8;
                 const littleEndian = view.getUint16(tiffOffset, false) === 0x4949;
-                
+
                 const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
                 const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
-                
+
                 // Search for EXIF IFD pointer (tag 0x8769)
                 for (let i = 0; i < numEntries; i++) {
                   const entryOffset = tiffOffset + ifdOffset + 2 + (i * 12);
                   const tag = view.getUint16(entryOffset, littleEndian);
-                  
+
                   if (tag === 0x8769) {
                     // Found EXIF IFD
                     const exifIfdOffset = view.getUint32(entryOffset + 8, littleEndian);
                     const exifNumEntries = view.getUint16(tiffOffset + exifIfdOffset, littleEndian);
-                    
+
                     // Search for DateTimeOriginal (tag 0x9003) or DateTimeDigitized (tag 0x9004)
                     for (let j = 0; j < exifNumEntries; j++) {
                       const exifEntryOffset = tiffOffset + exifIfdOffset + 2 + (j * 12);
                       const exifTag = view.getUint16(exifEntryOffset, littleEndian);
-                      
+
                       // DateTimeOriginal (0x9003) or DateTimeDigitized (0x9004)
                       if (exifTag === 0x9003 || exifTag === 0x9004) {
                         const valueOffset = view.getUint32(exifEntryOffset + 8, littleEndian);
                         let dateStr = '';
-                        
+
                         for (let k = 0; k < 19; k++) {
                           dateStr += String.fromCharCode(view.getUint8(tiffOffset + valueOffset + k));
                         }
-                        
+
                         // Parse "YYYY:MM:DD HH:MM:SS" format
                         const parts = dateStr.split(' ');
                         if (parts.length === 2) {
                           const dateParts = parts[0].split(':');
                           const timeParts = parts[1].split(':');
-                          
+
                           if (dateParts.length === 3 && timeParts.length === 3) {
                             const captureDate = new Date(
                               parseInt(dateParts[0]),
@@ -139,7 +364,7 @@ const getCaptureTime = (file) => {
                               parseInt(timeParts[1]),
                               parseInt(timeParts[2])
                             );
-                            
+
                             resolve({
                               timestamp: captureDate.getTime(),
                               source: 'EXIF',
@@ -153,27 +378,27 @@ const getCaptureTime = (file) => {
                   }
                 }
               }
-              
+
               resolve(getFileFallbackTime(file));
               return;
             }
-            
+
             // Skip to next marker
             if (marker === 0xFFD9 || marker === 0xFFDA) break;
             const length = view.getUint16(offset, false);
             offset += length;
           }
-          
+
           resolve(getFileFallbackTime(file));
-          
+
         } catch (error) {
           resolve(getFileFallbackTime(file));
         }
       };
-      
+
       reader.onerror = () => resolve(getFileFallbackTime(file));
       reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
-      
+
     } else {
       resolve(getFileFallbackTime(file));
     }
@@ -188,7 +413,7 @@ const getExifDeviceInfo = (file) => {
       reader.onload = (e) => {
         try {
           const view = new DataView(e.target.result);
-          
+
           if (view.getUint16(0, false) !== 0xFFD8) {
             resolve({ found: false });
             return;
@@ -209,19 +434,19 @@ const getExifDeviceInfo = (file) => {
                 view.getUint8(offset + 4),
                 view.getUint8(offset + 5)
               );
-              
+
               if (exifHeader === 'Exif') {
                 const tiffOffset = offset + 8;
                 const littleEndian = view.getUint16(tiffOffset, false) === 0x4949;
                 const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
                 const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
-                
+
                 for (let i = 0; i < numEntries; i++) {
                   const entryOffset = tiffOffset + ifdOffset + 2 + (i * 12);
                   const tag = view.getUint16(entryOffset, littleEndian);
                   const type = view.getUint16(entryOffset + 2, littleEndian);
                   const numValues = view.getUint32(entryOffset + 4, littleEndian);
-                  
+
                   // Tag 0x010F = Make, Tag 0x0110 = Model
                   if (tag === 0x010F || tag === 0x0110) {
                     let valueOffset;
@@ -230,28 +455,28 @@ const getExifDeviceInfo = (file) => {
                     } else {
                       valueOffset = entryOffset + 8 - tiffOffset;
                     }
-                    
+
                     let str = '';
                     for (let j = 0; j < numValues - 1; j++) {
                       const charCode = view.getUint8(tiffOffset + valueOffset + j);
                       if (charCode === 0) break;
                       str += String.fromCharCode(charCode);
                     }
-                    
+
                     if (tag === 0x010F) make = str.trim();
                     if (tag === 0x0110) model = str.trim();
                   }
                 }
               }
-              
+
               break;
             }
-            
+
             if (marker === 0xFFD9 || marker === 0xFFDA) break;
             const length = view.getUint16(offset, false);
             offset += length;
           }
-          
+
           if (make || model) {
             const deviceName = [make, model].filter(Boolean).join(' ');
             // Generate device ID from make+model
@@ -261,7 +486,7 @@ const getExifDeviceInfo = (file) => {
               hash |= 0;
             }
             const deviceId = 'CAM-' + Math.abs(hash).toString(36).toUpperCase().slice(0, 6);
-            
+
             resolve({
               found: true,
               make: make,
@@ -273,15 +498,15 @@ const getExifDeviceInfo = (file) => {
           } else {
             resolve({ found: false });
           }
-          
+
         } catch (error) {
           resolve({ found: false });
         }
       };
-      
+
       reader.onerror = () => resolve({ found: false });
       reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
-      
+
     } else {
       resolve({ found: false });
     }
@@ -296,7 +521,7 @@ const getExifGPS = (file) => {
       reader.onload = (e) => {
         try {
           const view = new DataView(e.target.result);
-          
+
           if (view.getUint16(0, false) !== 0xFFD8) {
             resolve({ found: false });
             return;
@@ -315,29 +540,29 @@ const getExifGPS = (file) => {
                 view.getUint8(offset + 4),
                 view.getUint8(offset + 5)
               );
-              
+
               if (exifHeader === 'Exif') {
                 const tiffOffset = offset + 8;
                 const littleEndian = view.getUint16(tiffOffset, false) === 0x4949;
                 const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
                 const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
-                
+
                 // Find GPS IFD pointer (tag 0x8825)
                 for (let i = 0; i < numEntries; i++) {
                   const entryOffset = tiffOffset + ifdOffset + 2 + (i * 12);
                   const tag = view.getUint16(entryOffset, littleEndian);
-                  
+
                   if (tag === 0x8825) {
                     const gpsIfdOffset = view.getUint32(entryOffset + 8, littleEndian);
                     const gpsNumEntries = view.getUint16(tiffOffset + gpsIfdOffset, littleEndian);
-                    
+
                     let latRef = 'N', lonRef = 'E';
                     let lat = null, lon = null;
-                    
+
                     for (let j = 0; j < gpsNumEntries; j++) {
                       const gpsEntryOffset = tiffOffset + gpsIfdOffset + 2 + (j * 12);
                       const gpsTag = view.getUint16(gpsEntryOffset, littleEndian);
-                      
+
                       // GPS Latitude Ref (N/S)
                       if (gpsTag === 0x0001) {
                         latRef = String.fromCharCode(view.getUint8(gpsEntryOffset + 8));
@@ -363,11 +588,11 @@ const getExifGPS = (file) => {
                         lon = d + (m / 60) + (s / 3600);
                       }
                     }
-                    
+
                     if (lat !== null && lon !== null) {
                       if (latRef === 'S') lat = -lat;
                       if (lonRef === 'W') lon = -lon;
-                      
+
                       resolve({
                         found: true,
                         latitude: lat,
@@ -383,22 +608,22 @@ const getExifGPS = (file) => {
               }
               break;
             }
-            
+
             if (marker === 0xFFD9 || marker === 0xFFDA) break;
             const length = view.getUint16(offset, false);
             offset += length;
           }
-          
+
           resolve({ found: false });
-          
+
         } catch (error) {
           resolve({ found: false });
         }
       };
-      
+
       reader.onerror = () => resolve({ found: false });
       reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
-      
+
     } else {
       resolve({ found: false });
     }
@@ -411,7 +636,7 @@ const getExifGPS = (file) => {
 
 const getDeviceFingerprint = () => {
   let deviceId = localStorage.getItem('deviceFingerprint');
-  
+
   if (!deviceId) {
     const screenData = window.screen.width + 'x' + window.screen.height + 'x' + window.screen.colorDepth;
     const platform = navigator.platform || 'unknown';
@@ -435,7 +660,7 @@ const getDeviceFingerprint = () => {
     deviceId = `${deviceType}-${hashStr}`;
     localStorage.setItem('deviceFingerprint', deviceId);
   }
-  
+
   return deviceId;
 };
 
@@ -451,7 +676,7 @@ const getDeviceDetails = () => {
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const deviceType = isMobile ? 'Mobile' : 'Desktop';
   const browser = navigator.userAgent;
-  
+
   return {
     screen: screenData,
     colorDepth: colorDepth,
@@ -479,18 +704,18 @@ const generateAuthorshipCertificateId = (userId, deviceId) => {
   // Generate a consistent certificate ID based on userId and deviceId only
   // This ensures the same owner always gets the same certificate ID
   const combinedString = `${userId}-${deviceId}`;
-  
+
   let hash = 0;
   for (let i = 0; i < combinedString.length; i++) {
     const char = combinedString.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
     hash |= 0;
   }
-  
+
   const hashStr = Math.abs(hash).toString(16).toUpperCase();
   const userHash = userId.split('').reduce((h, c) => ((h << 5) - h) + c.charCodeAt(0), 0);
   const userSuffix = Math.abs(userHash).toString(36).toUpperCase().slice(0, 6);
-  
+
   return `CERT-${hashStr.slice(0, 8)}${userSuffix}`;
 };
 
@@ -498,60 +723,125 @@ const generateAuthorshipCertificateId = (userId, deviceId) => {
 // ASSET ID GENERATION (Image Hash Based)
 // ============================================
 
+// ============================================
+// VAULT SECURITY HELPERS
+// ============================================
+
+// Compute SHA-256 hash of a file
+const computeSHA256 = async (file) => {
+  try {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    // Fallback: simple checksum
+    return 'sha256-unavailable-' + Date.now().toString(16);
+  }
+};
+
+// Compute perceptual hash (pHash) of an image canvas — 16-char hex
+const computePerceptualHash = (canvas) => {
+  try {
+    const small = document.createElement('canvas');
+    small.width = 8;
+    small.height = 8;
+    const ctx = small.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, 8, 8);
+    const data = ctx.getImageData(0, 0, 8, 8).data;
+    const grays = [];
+    for (let i = 0; i < 64; i++) {
+      grays.push(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
+    }
+    const avg = grays.reduce((a, b) => a + b, 0) / 64;
+    let bits = '';
+    for (const g of grays) bits += g >= avg ? '1' : '0';
+    let hex = '';
+    for (let i = 0; i < 64; i += 4) hex += parseInt(bits.substr(i, 4), 2).toString(16);
+    return hex.toUpperCase();
+  } catch (e) {
+    return 'PHASH-UNAVAIL';
+  }
+};
+
+// Compute Hamming distance between two pHashes (0 = identical, 64 = totally different)
+const pHashDistance = (hash1, hash2) => {
+  if (!hash1 || !hash2 || hash1.length !== hash2.length) return 64;
+  let dist = 0;
+  for (let i = 0; i < hash1.length; i++) {
+    const b1 = parseInt(hash1[i], 16).toString(2).padStart(4, '0');
+    const b2 = parseInt(hash2[i], 16).toString(2).padStart(4, '0');
+    for (let j = 0; j < 4; j++) if (b1[j] !== b2[j]) dist++;
+  }
+  return dist;
+};
+
+// Generate a simulated blockchain anchor TX hash
+const generateBlockchainAnchor = (fileHash, timestamp) => {
+  const seed = (fileHash || '') + (timestamp || Date.now()).toString(16);
+  let result = '0x';
+  for (let i = 0; i < 64; i++) {
+    const charCode = seed.charCodeAt(i % seed.length);
+    result += ((charCode * (i + 7)) % 16).toString(16);
+  }
+  return result;
+};
+
 const generateAssetId = (imageData) => {
   // Generate a consistent asset ID based on image content hash
   // This ensures the same image always gets the same asset ID
   const data = imageData.data;
-  
+
   // Sample pixels at regular intervals to create a signature
   let hash = 0;
   const sampleInterval = Math.floor(data.length / 1000); // Sample ~1000 points
-  
+
   for (let i = 0; i < data.length; i += sampleInterval) {
     hash = ((hash << 5) - hash) + data[i];
     hash |= 0; // Convert to 32bit integer
   }
-  
+
   // Add dimensions to the hash for uniqueness
   hash = ((hash << 5) - hash) + imageData.width;
   hash = ((hash << 5) - hash) + imageData.height;
   hash |= 0;
-  
+
   // Create a consistent ID from the hash
   const hashStr = Math.abs(hash).toString(36).toUpperCase().padStart(12, '0');
-  
+
   return `AST-${hashStr}`;
 };
 
 // ============================================
 // LSB STEGANOGRAPHY - EMBED UUID
+// [UPDATED] Added width, height params + upgraded to IMGCRYPT3 format
 // ============================================
 
-const embedUUIDAdvanced = (imageData, userId, gpsData, deviceInfo, ipAddress, timestamp, deviceSource, ipSource, gpsSource) => {
+const embedUUIDAdvanced = (imageData, userId, gpsData, deviceInfo, ipAddress, timestamp, deviceSource, ipSource, gpsSource, width, height) => {
   const data = imageData.data;
-  
+
   // Prepare GPS string
-  const gpsString = gpsData && gpsData.available 
+  const gpsString = gpsData && gpsData.available
     ? `${gpsData.latitude},${gpsData.longitude}`
     : 'NOGPS';
-  
-  // Create message with all metadata (Version 2 format with sources)
-  const message = `IMGCRYPT2|${userId}|${gpsString}|${timestamp || Date.now()}|${deviceInfo.deviceId || 'UNKNOWN'}|${deviceInfo.deviceName || 'UNKNOWN'}|${ipAddress || 'UNKNOWN'}|${deviceSource || 'Unknown'}|${ipSource || 'Unknown'}|${gpsSource || 'Unknown'}|END`;
-  
+
+  // Create message with all metadata (Version 3 format with resolution)
+  const message = `IMGCRYPT3|${userId}|${gpsString}|${timestamp || Date.now()}|${deviceInfo.deviceId || 'UNKNOWN'}|${deviceInfo.deviceName || 'UNKNOWN'}|${ipAddress || 'UNKNOWN'}|${deviceSource || 'Unknown'}|${ipSource || 'Unknown'}|${gpsSource || 'Unknown'}|${width}x${height}|END`;
+
   // Convert message to binary
   let binaryMessage = '';
   for (let i = 0; i < message.length; i++) {
     const charCode = message.charCodeAt(i);
     binaryMessage += charCode.toString(2).padStart(8, '0');
   }
-  
+
   // Embed binary message into LSB of RGB channels
   let bitIndex = 0;
   const totalBits = binaryMessage.length;
-  
+
   // Embed message multiple times for redundancy (at different positions)
   const embedPositions = [0, Math.floor(data.length / 4), Math.floor(data.length / 2)];
-  
+
   for (const startPos of embedPositions) {
     bitIndex = 0;
     for (let i = startPos; i < data.length && bitIndex < totalBits; i += 4) {
@@ -563,12 +853,13 @@ const embedUUIDAdvanced = (imageData, userId, gpsData, deviceInfo, ipAddress, ti
       }
     }
   }
-  
+
   return imageData;
 };
 
 // ============================================
 // LSB STEGANOGRAPHY - EXTRACT UUID
+// [UPDATED] Added IMGCRYPT3 (V3) support + originalResolution field
 // ============================================
 
 const extractUUIDAdvanced = (imageData) => {
@@ -595,14 +886,15 @@ const extractUUIDAdvanced = (imageData) => {
       }
     }
 
-    // Check for version 2 (with sources) or version 1 (without sources)
-    if ((text.includes('IMGCRYPT2|') || text.includes('IMGCRYPT|')) && text.includes('|END')) {
+    // Check for version 3 (with resolution), version 2 (with sources), or version 1 (without sources)
+    if ((text.includes('IMGCRYPT3|') || text.includes('IMGCRYPT2|') || text.includes('IMGCRYPT|')) && text.includes('|END')) {
+      const isV3 = text.includes('IMGCRYPT3|');
       const isV2 = text.includes('IMGCRYPT2|');
-      const startIdx = text.indexOf(isV2 ? 'IMGCRYPT2|' : 'IMGCRYPT|') + (isV2 ? 10 : 9);
+      const startIdx = text.indexOf(isV3 ? 'IMGCRYPT3|' : (isV2 ? 'IMGCRYPT2|' : 'IMGCRYPT|')) + (isV3 ? 10 : (isV2 ? 10 : 9));
       const endIdx = text.indexOf('|END');
       const content = text.substring(startIdx, endIdx);
       const parts = content.split('|');
-      
+
       if (parts.length >= 2) {
         foundData.push({
           userId: parts[0] || null,
@@ -614,6 +906,8 @@ const extractUUIDAdvanced = (imageData) => {
           deviceSource: parts[6] || null,
           ipSource: parts[7] || null,
           gpsSource: parts[8] || null,
+          originalResolution: isV3 ? parts[9] : null,
+          isV3: isV3,
           isV2: isV2
         });
       }
@@ -622,7 +916,7 @@ const extractUUIDAdvanced = (imageData) => {
 
   if (foundData.length > 0) {
     const bestMatch = foundData[0];
-    
+
     // Parse GPS data
     let gpsResult = { available: false, coordinates: null, mapsUrl: null, source: bestMatch.gpsSource || 'Unknown' };
     if (bestMatch.gps && bestMatch.gps !== 'NOGPS') {
@@ -658,6 +952,7 @@ const extractUUIDAdvanced = (imageData) => {
       deviceSource: bestMatch.deviceSource || 'Unknown',
       ipSource: bestMatch.ipSource || 'Unknown',
       gpsSource: bestMatch.gpsSource || 'Unknown',
+      originalResolution: bestMatch.originalResolution,
       confidence: foundData.length >= 3 ? 'Very High' : 'High'
     };
   }
@@ -673,6 +968,7 @@ const extractUUIDAdvanced = (imageData) => {
     deviceSource: null,
     ipSource: null,
     gpsSource: null,
+    originalResolution: null,
     confidence: 'None'
   };
 };
@@ -687,21 +983,21 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   const height = canvas.height;
   const totalPixels = width * height;
   const pixelCount = data.length / 4;
-  
+
   // Get EXIF-like metadata indicators
   const isPNG = fileName.toLowerCase().includes('.png');
   const isJPEG = fileName.toLowerCase().includes('.jpg') || fileName.toLowerCase().includes('.jpeg');
-  
+
   // 1. Color Channel Correlation (AI images have unnatural correlation)
   let rrCorr = 0, ggCorr = 0, bbCorr = 0, rgCorr = 0, rbCorr = 0, gbCorr = 0;
   const sampleSize = Math.min(5000, pixelCount);
-  
+
   for (let i = 0; i < sampleSize; i++) {
     const idx = Math.floor(Math.random() * pixelCount) * 4;
     const r = data[idx];
     const g = data[idx + 1];
     const b = data[idx + 2];
-    
+
     rrCorr += r * r;
     ggCorr += g * g;
     bbCorr += b * b;
@@ -709,18 +1005,18 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     rbCorr += r * b;
     gbCorr += g * b;
   }
-  
+
   const channelCorrelation = (rgCorr + rbCorr + gbCorr) / (rrCorr + ggCorr + bbCorr + 0.001);
-  
+
   // 2. Local Binary Pattern-like analysis (texture signature)
   let uniformPatterns = 0;
   let nonUniformPatterns = 0;
-  
+
   for (let y = 2; y < Math.min(height - 2, 100); y += 2) {
     for (let x = 2; x < Math.min(width - 2, 100); x += 2) {
       const centerIdx = (y * width + x) * 4;
       const center = data[centerIdx];
-      
+
       const neighbors = [
         data[((y-1) * width + (x-1)) * 4],
         data[((y-1) * width + x) * 4],
@@ -731,89 +1027,89 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
         data[((y+1) * width + (x-1)) * 4],
         data[(y * width + (x-1)) * 4]
       ];
-      
+
       let transitions = 0;
       for (let i = 0; i < 8; i++) {
         if ((neighbors[i] > center) !== (neighbors[(i+1) % 8] > center)) transitions++;
       }
-      
+
       if (transitions <= 2) uniformPatterns++;
       else nonUniformPatterns++;
     }
   }
-  
+
   const uniformityRatio = uniformPatterns / (uniformPatterns + nonUniformPatterns + 0.001);
-  
+
   // 3. Frequency Domain Analysis (DCT-like for periodic patterns)
   let highFreqEnergy = 0;
   let lowFreqEnergy = 0;
-  
+
   for (let y = 0; y < Math.min(height - 4, 200); y += 4) {
     for (let x = 0; x < Math.min(width - 4, 200); x += 4) {
       let blockSum = 0;
       let blockVariance = 0;
-      
+
       for (let dy = 0; dy < 4; dy++) {
         for (let dx = 0; dx < 4; dx++) {
           const idx = ((y + dy) * width + (x + dx)) * 4;
           blockSum += data[idx];
         }
       }
-      
+
       const blockMean = blockSum / 16;
-      
+
       for (let dy = 0; dy < 4; dy++) {
         for (let dx = 0; dx < 4; dx++) {
           const idx = ((y + dy) * width + (x + dx)) * 4;
           blockVariance += Math.pow(data[idx] - blockMean, 2);
         }
       }
-      
+
       if (blockVariance < 100) lowFreqEnergy++;
       else highFreqEnergy++;
     }
   }
-  
+
   const smoothBlockRatio = lowFreqEnergy / (lowFreqEnergy + highFreqEnergy + 0.001);
-  
+
   // 4. Edge Coherence (AI has overly coherent edges)
   let coherentEdges = 0;
   let totalEdges = 0;
   const stride = width * 4;
-  
+
   for (let y = 2; y < height - 2; y += 2) {
     for (let x = 2; x < width - 2; x += 2) {
       const idx = (y * width + x) * 4;
-      
+
       const gx = Math.abs(data[idx + 4] - data[idx - 4]);
       const gy = Math.abs(data[idx + stride] - data[idx - stride]);
       const magnitude = Math.sqrt(gx * gx + gy * gy);
-      
+
       if (magnitude > 20) {
         totalEdges++;
-        
+
         const gx2 = Math.abs(data[idx + 8] - data[idx]);
         const gy2 = Math.abs(data[idx + stride * 2] - data[idx]);
         const magnitude2 = Math.sqrt(gx2 * gx2 + gy2 * gy2);
-        
+
         if (Math.abs(magnitude - magnitude2) < 10) coherentEdges++;
       }
     }
   }
-  
+
   const edgeCoherence = totalEdges > 0 ? coherentEdges / totalEdges : 0;
-  
+
   // 5. Color Distribution Entropy
   const histR = new Array(256).fill(0);
   const histG = new Array(256).fill(0);
   const histB = new Array(256).fill(0);
-  
+
   for (let i = 0; i < data.length; i += 4) {
     histR[data[i]]++;
     histG[data[i + 1]]++;
     histB[data[i + 2]]++;
   }
-  
+
   let entropyR = 0, entropyG = 0, entropyB = 0;
   for (let i = 0; i < 256; i++) {
     if (histR[i] > 0) {
@@ -829,25 +1125,25 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       entropyB -= p * Math.log2(p);
     }
   }
-  
+
   const avgEntropy = (entropyR + entropyG + entropyB) / 3;
-  
+
   // 6. Pixel value clustering (AI tends to cluster values)
   let clusterCount = 0;
   const binSize = 10;
   const bins = new Array(Math.ceil(256 / binSize)).fill(0);
-  
+
   for (let i = 0; i < data.length; i += 4) {
     const avg = Math.floor((data[i] + data[i + 1] + data[i + 2]) / 3);
     bins[Math.floor(avg / binSize)]++;
   }
-  
+
   for (let i = 0; i < bins.length; i++) {
     if (bins[i] > pixelCount * 0.05) clusterCount++;
   }
-  
+
   const clusteringScore = clusterCount / bins.length;
-  
+
   // 7. Basic metrics
   let rSum = 0, gSum = 0, bSum = 0;
   for (let i = 0; i < data.length; i += 4) {
@@ -855,11 +1151,11 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     gSum += data[i + 1];
     bSum += data[i + 2];
   }
-  
+
   const avgR = rSum / pixelCount;
   const avgG = gSum / pixelCount;
   const avgB = bSum / pixelCount;
-  
+
   let totalVariance = 0;
   for (let i = 0; i < data.length; i += 4) {
     totalVariance += Math.pow(data[i] - avgR, 2);
@@ -867,22 +1163,22 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     totalVariance += Math.pow(data[i + 2] - avgB, 2);
   }
   totalVariance = totalVariance / (pixelCount * 3);
-  
+
   // Simple noise level
   let noiseLevel = 0;
   for (let i = 4; i < data.length - 4; i += 4) {
     noiseLevel += Math.abs(data[i] - data[i - 4]);
   }
   noiseLevel = noiseLevel / pixelCount;
-  
+
   const compressionRatio = fileSize / totalPixels;
   const aspectRatio = width / height;
-  
+
   // DECISION LOGIC with strict AI detection
   let detectedCase = '';
   let confidence = 0;
   let reasoning = [];
-  
+
   if (hasUUID) {
     const isNonStandardAspect = aspectRatio < 0.7 || aspectRatio > 1.8;
     const likelyCropped = totalPixels < width * height * 0.85;
@@ -904,7 +1200,7 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   } else {
     // AI Detection Score (0-100)
     let aiScore = 0;
-    
+
     // Strong AI indicators
     if (smoothBlockRatio > 0.6) aiScore += 25;
     if (edgeCoherence > 0.7) aiScore += 25;
@@ -915,10 +1211,10 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     if (isPNG) aiScore += 10;
     if (noiseLevel < 5) aiScore += 15;
     if (width % 64 === 0 && height % 64 === 0) aiScore += 10;
-    
+
     // Mobile Detection Score (0-100)
     let mobileScore = 0;
-    
+
     if (noiseLevel > 15) mobileScore += 30;
     if (isJPEG) mobileScore += 25;
     if (totalVariance > 3000) mobileScore += 20;
@@ -926,29 +1222,29 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
     if (compressionRatio > 1.3) mobileScore += 15;
     if (uniformityRatio < 0.4) mobileScore += 15;
     if (smoothBlockRatio < 0.3) mobileScore += 15;
-    
+
     // Mobile aspect ratios
     const mobileAspects = [0.5625, 0.75, 1.0, 1.333, 1.777, 2.0, 2.165];
     if (mobileAspects.some(a => Math.abs(aspectRatio - a) < 0.05)) mobileScore += 20;
-    
+
     // Check for typical mobile dimensions
     const commonMobileWidths = [720, 1080, 1440, 1920, 2160, 3024, 4032];
     const commonMobileHeights = [1280, 1920, 2560, 2880, 4032];
     if (commonMobileWidths.includes(width) || commonMobileHeights.includes(height)) mobileScore += 15;
-    
+
     // Web Download Score (0-100)
     let webScore = 0;
-    
+
     if (compressionRatio > 0.5 && compressionRatio < 1.5) webScore += 25;
     if (width % 10 === 0 && height % 10 === 0) webScore += 20;
     if (noiseLevel > 8 && noiseLevel < 18) webScore += 20;
     if (avgEntropy > 6.5 && avgEntropy < 7.5) webScore += 15;
     if (uniformityRatio > 0.4 && uniformityRatio < 0.6) webScore += 15;
     if (totalVariance > 1500 && totalVariance < 3500) webScore += 20;
-    
+
     // Determine winner with clear thresholds
     const scoreDiff = Math.abs(aiScore - mobileScore);
-    
+
     if (aiScore >= 60) {
       detectedCase = 'Case 2: AI Generated';
       confidence = Math.min(aiScore, 97);
@@ -958,7 +1254,7 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       if (isPNG) reasoning.push('PNG format (common for AI tools)');
       if (avgEntropy < 6.5) reasoning.push('Low color entropy: ' + avgEntropy.toFixed(2));
       if (width % 64 === 0 || height % 64 === 0) reasoning.push('AI-typical dimensions: ' + width + 'x' + height);
-      
+
     } else if (mobileScore >= 60) {
       detectedCase = 'Case 1: Mobile Captured';
       confidence = Math.min(mobileScore, 97);
@@ -967,28 +1263,28 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       if (isJPEG) reasoning.push('JPEG format (mobile camera)');
       reasoning.push('High color entropy: ' + avgEntropy.toFixed(2));
       reasoning.push('Non-uniform texture: ' + (uniformityRatio * 100).toFixed(1) + '%');
-      
+
     } else if (aiScore > mobileScore && aiScore > webScore) {
       detectedCase = 'Case 2: AI Generated';
       confidence = Math.min(Math.max(aiScore, 55), 85);
       reasoning.push('AI characteristics detected');
       reasoning.push('Smooth blocks: ' + (smoothBlockRatio * 100).toFixed(1) + '%');
       reasoning.push('Edge coherence: ' + (edgeCoherence * 100).toFixed(1) + '%');
-      
+
     } else if (mobileScore > webScore) {
       detectedCase = 'Case 1: Mobile Captured';
       confidence = Math.min(Math.max(mobileScore, 55), 85);
       reasoning.push('Mobile characteristics detected');
       reasoning.push('Noise level: ' + noiseLevel.toFixed(2));
       reasoning.push('Variance: ' + totalVariance.toFixed(2));
-      
+
     } else {
       detectedCase = 'Case 3: Downloaded from Web';
       confidence = Math.min(Math.max(webScore, 60), 80);
       reasoning.push('Standard web image characteristics');
       reasoning.push('Moderate compression and entropy');
     }
-    
+
     // Warn if close call
     if (scoreDiff < 20 && confidence > 70) {
       const secondPlace = aiScore > mobileScore ? 'Mobile' : 'AI';
@@ -996,7 +1292,7 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
       confidence = Math.min(confidence, 75);
     }
   }
-  
+
   return {
     detectedCase,
     confidence,
@@ -1022,20 +1318,20 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
 const generateReport = (report, imageData) => {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  
+
   canvas.width = 595;
   canvas.height = 842;
-  
+
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
+
   // Header
   ctx.fillStyle = '#2563eb';
   ctx.fillRect(0, 0, canvas.width, 80);
   ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 24px Arial';
   ctx.fillText('IMAGE ANALYSIS REPORT', 40, 50);
-  
+
   // Classification banner
   const confidenceColor = report.confidence > 90 ? '#10b981' : report.confidence > 70 ? '#fbbf24' : '#ef4444';
   ctx.fillStyle = confidenceColor;
@@ -1045,15 +1341,15 @@ const generateReport = (report, imageData) => {
   ctx.fillText(report.detectedCase, 40, 105);
   ctx.font = '12px Arial';
   ctx.fillText('Confidence: ' + report.confidence + '%', 40, 122);
-  
+
   let y = 160;
-  
+
   // Ownership section
   ctx.fillStyle = '#1e40af';
   ctx.font = 'bold 16px Arial';
   ctx.fillText('OWNERSHIP AT CREATION', 40, y);
   y += 25;
-  
+
   ctx.fillStyle = '#000000';
   ctx.font = '12px Arial';
   const ownershipFields = [
@@ -1067,7 +1363,7 @@ const generateReport = (report, imageData) => {
     ['Capture Location:', report.captureLocationInfo],
     ['GPS Location:', report.gpsLocation?.available ? report.gpsLocation.coordinates : 'Not Available']
   ];
-  
+
   ownershipFields.forEach(function(field) {
     const label = field[0];
     const value = field[1];
@@ -1078,15 +1374,15 @@ const generateReport = (report, imageData) => {
     ctx.fillText(displayValue, 240, y);
     y += 18;
   });
-  
+
   y += 15;
-  
+
   // Technical section
   ctx.fillStyle = '#1e40af';
   ctx.font = 'bold 16px Arial';
   ctx.fillText('TECHNICAL DETAILS', 40, y);
   y += 25;
-  
+
   ctx.fillStyle = '#000000';
   const technicalFields = [
     ['Total Pixels:', report.totalPixels],
@@ -1096,10 +1392,9 @@ const generateReport = (report, imageData) => {
     ['IP Address:', report.ipAddress],
     ['Ownership Info:', report.ownershipInfo],
     ['Certificate:', report.authorshipCertificate],
-    ['Rotation:', report.rotationMessage || 'Not detected']  // ✅ ADD THIS LINE
-
+    ['Rotation:', report.rotationMessage || 'Not detected']
   ];
-  
+
   technicalFields.forEach(function(field) {
     const label = field[0];
     const value = field[1];
@@ -1110,7 +1405,7 @@ const generateReport = (report, imageData) => {
     ctx.fillText(displayValue, 240, y);
     y += 18;
   });
-  
+
   // Classification reasoning
   if (report.reasoning && report.reasoning.length > 0) {
     y += 15;
@@ -1118,7 +1413,7 @@ const generateReport = (report, imageData) => {
     ctx.font = 'bold 16px Arial';
     ctx.fillText('CLASSIFICATION ANALYSIS', 40, y);
     y += 25;
-    
+
     ctx.fillStyle = '#000000';
     ctx.font = '11px Arial';
     report.reasoning.forEach(function(reason) {
@@ -1126,7 +1421,7 @@ const generateReport = (report, imageData) => {
       y += 16;
     });
   }
-  
+
   // Analyzed Image Section
   if (imageData) {
     y += 20;
@@ -1180,7 +1475,7 @@ const generateReport = (report, imageData) => {
     img.src = imageData;
     return;
   }
-  
+
   // If no image, save immediately
   canvas.toBlob((blob) => {
     const url = URL.createObjectURL(blob);
@@ -1199,7 +1494,7 @@ const generateReport = (report, imageData) => {
 // ============================================
 const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const navigate = useNavigate();
-  
+
   // ✅ MOVE ALL HOOKS TO THE TOP - BEFORE ANY CONDITIONAL LOGIC
   const [activeTab, setActiveTab] = useState('encrypt');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -1207,6 +1502,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const [preview, setPreview] = useState(null);
   const [userId, setUserId] = useState('');
   const [encryptedImage, setEncryptedImage] = useState(null);
+  const [encryptedFileName, setEncryptedFileName] = useState('encrypted-image.png');
   const [analysisReport, setAnalysisReport] = useState(null);
   const [showDeviceDetails, setShowDeviceDetails] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -1224,14 +1520,14 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       }
     };
   }, [encryptedImage]);
-  
+
   // ✅ NOW the safety check - AFTER all hooks
   useEffect(() => {
     if (!user) {
       navigate('/login');
     }
   }, [user, navigate]);
-  
+
   // ✅ NOW the early return - AFTER all hooks
   if (!user) {
     return (
@@ -1245,114 +1541,116 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   }
 
   const startCamera = async () => {
-  try {
-    setCameraActive(true);
-
-    // Try with specific facing mode first
-    let constraints = {
-      video: { 
-        facingMode: { ideal: facingMode },
-        width: { ideal: 1920, max: 1920 },
-        height: { ideal: 1080, max: 1080 }
-      },
-      audio: false
-    };
-
-    let stream;
-    
     try {
-      // Try preferred camera
-      stream = await navigator.mediaDevices.getUserMedia(constraints);
-    } catch (err) {
-      console.log('Specific camera failed, trying fallback...', err);
-      
-      // Fallback: Try without facingMode constraint
-      constraints = {
+      setCameraActive(true);
+
+      // Try with specific facing mode first
+      let constraints = {
         video: {
+          facingMode: { ideal: facingMode },
           width: { ideal: 1920, max: 1920 },
           height: { ideal: 1080, max: 1080 }
         },
         audio: false
       };
-      stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      let stream;
+
+      try {
+        // Try preferred camera
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        console.log('Specific camera failed, trying fallback...', err);
+
+        // Fallback: Try without facingMode constraint
+        constraints = {
+          video: {
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 }
+          },
+          audio: false
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      }
+
+      // Check if device has multiple cameras (can switch)
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      setCanSwitchCamera(videoDevices.length > 1);
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute('playsinline', true);
+        videoRef.current.setAttribute('autoplay', true);
+        videoRef.current.setAttribute('muted', true);
+
+        // Important: Wait for video to be ready
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play().catch(err => {
+            console.error('Play failed:', err);
+          });
+        };
+      }
+
+    } catch (err) {
+      console.error('Camera error:', err);
+      let errorMessage = 'Camera access failed. ';
+
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        errorMessage += 'Please allow camera permission in your browser settings.';
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        errorMessage += 'No camera found on this device.';
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        errorMessage += 'Camera is already in use by another app. Please close other apps using the camera.';
+      } else {
+        errorMessage += err.message;
+      }
+
+      alert(errorMessage);
+      setCameraActive(false);
+    }
+  };
+
+  const switchCamera = async () => {
+    // Stop current stream
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(t => t.stop());
     }
 
-    // Check if device has multiple cameras (can switch)
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoDevices = devices.filter(device => device.kind === 'videoinput');
-    setCanSwitchCamera(videoDevices.length > 1);
+    // Toggle facing mode
+    const newFacingMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newFacingMode);
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.setAttribute('playsinline', true);
-      videoRef.current.setAttribute('autoplay', true);
-      videoRef.current.setAttribute('muted', true);
-      
-      // Important: Wait for video to be ready
-      videoRef.current.onloadedmetadata = () => {
-        videoRef.current.play().catch(err => {
-          console.error('Play failed:', err);
-        });
-      };
+    // Restart camera with new facing mode
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { exact: newFacingMode },
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 }
+        },
+        audio: false
+      });
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(err => console.error('Play failed:', err));
+      }
+    } catch (err) {
+      console.error('Switch camera failed:', err);
+      // Fallback: restart with any available camera
+      startCamera();
     }
+  };
 
-  } catch (err) {
-    console.error('Camera error:', err);
-    let errorMessage = 'Camera access failed. ';
-    
-    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      errorMessage += 'Please allow camera permission in your browser settings.';
-    } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-      errorMessage += 'No camera found on this device.';
-    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-      errorMessage += 'Camera is already in use by another app. Please close other apps using the camera.';
-    } else {
-      errorMessage += err.message;
-    }
-    
-    alert(errorMessage);
-    setCameraActive(false);
-  }
-};
- const switchCamera = async () => {
-  // Stop current stream
-  if (videoRef.current?.srcObject) {
-    videoRef.current.srcObject.getTracks().forEach(t => t.stop());
-  }
-
-  // Toggle facing mode
-  const newFacingMode = facingMode === 'user' ? 'environment' : 'user';
-  setFacingMode(newFacingMode);
-
-  // Restart camera with new facing mode
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { 
-        facingMode: { exact: newFacingMode },
-        width: { ideal: 1920, max: 1920 },
-        height: { ideal: 1080, max: 1080 }
-      },
-      audio: false
-    });
-
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(err => console.error('Play failed:', err));
-    }
-  } catch (err) {
-    console.error('Switch camera failed:', err);
-    // Fallback: restart with any available camera
-    startCamera();
-  }
-};
   const stopCamera = () => {
-  if (videoRef.current?.srcObject) {
-    videoRef.current.srcObject.getTracks().forEach(t => t.stop());
-    videoRef.current.srcObject = null;
-  }
-  setCameraActive(false);
-  setCanSwitchCamera(false);
-};
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(t => t.stop());
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    setCanSwitchCamera(false);
+  };
 
   const captureImage = () => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -1378,7 +1676,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   };
 
   const handleFileSelect = (file) => {
-    setCaptureSource('Browser Upload'); 
+    setCaptureSource('Browser Upload');
 
     if (file && file.type.startsWith('image/')) {
       setSelectedFile(file);
@@ -1395,13 +1693,16 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     }
 
     setProcessing(true);
-    
+
+    // Compute SHA-256 hash of the original file immediately
+    const sha256Hash = await computeSHA256(selectedFile);
+
     // Cleanup previous encrypted image URL
     if (encryptedImage) {
       URL.revokeObjectURL(encryptedImage);
       setEncryptedImage(null);
     }
-    
+
     // Get all data in parallel
     const [currentGPS, ipAddress, captureTimeData, exifDeviceInfo, exifGPS] = await Promise.all([
       getGPSLocation(),
@@ -1410,16 +1711,16 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       getExifDeviceInfo(selectedFile),
       getExifGPS(selectedFile)
     ]);
-    
+
     // Get current device info using reusable functions
     const currentDeviceId = getDeviceFingerprint();
     const currentDeviceName = getCurrentDeviceName();
-    
+
     // Build device info based on scenario
     let deviceInfo;
     let gpsData;
     let ipInfo;
-    
+
     if (captureSource === 'Camera Capture') {
       // Scenario 1: Camera capture in YOUR app - use current device
       deviceInfo = {
@@ -1429,7 +1730,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       };
       gpsData = currentGPS.available ? { ...currentGPS, source: 'App Camera' } : { available: false, source: 'App Camera' };
       ipInfo = { ip: ipAddress, source: 'Capture Device' };
-      
+
     } else if (exifDeviceInfo.found) {
       // Scenario 3: Upload from DIFFERENT device - use EXIF + label IP
       deviceInfo = {
@@ -1446,7 +1747,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
         gpsData = { available: false, source: 'Not Available' };
       }
       ipInfo = { ip: ipAddress, source: 'Encrypting Device' };
-      
+
     } else {
       // Scenario 2: Upload on SAME device (no EXIF = screenshot/PNG/same device)
       deviceInfo = {
@@ -1457,7 +1758,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       gpsData = currentGPS.available ? { ...currentGPS, source: 'Encrypting Device' } : { available: false, source: 'Not Available' };
       ipInfo = { ip: ipAddress, source: 'Encrypting Device' };
     }
-    
+
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
@@ -1465,121 +1766,193 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       canvas.height = img.height;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0);
-      
+
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      
+
+      // [UPDATED] Pass canvas.width and canvas.height for V3 resolution embedding
       const encryptedData = embedUUIDAdvanced(
-        imageData, 
-        userId, 
+        imageData,
+        userId,
         { available: gpsData.available, latitude: gpsData.latitude, longitude: gpsData.longitude },
-        deviceInfo, 
-        ipInfo.ip, 
+        deviceInfo,
+        ipInfo.ip,
         captureTimeData.timestamp,
         deviceInfo.source,
         ipInfo.source,
-        gpsData.source
+        gpsData.source,
+        canvas.width,
+        canvas.height
       );
       ctx.putImageData(encryptedData, 0, 0);
-      
+
       canvas.toBlob((blob) => {
         const encryptedUrl = URL.createObjectURL(blob);
         setEncryptedImage(encryptedUrl);
         setProcessing(false);
-        
-        const locationMsg = gpsData.available 
-          ? `\nGPS: ${gpsData.latitude?.toFixed(6)}, ${gpsData.longitude?.toFixed(6)} (${gpsData.source})` 
+
+        // ── Generate asset ID + timestamp filename ──────────────────────────
+        const imageData2 = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const assetId = generateAssetId(imageData2);
+        const now = new Date();
+        const ts = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+        const filename = `${assetId}_${ts}.png`;
+        setEncryptedFileName(filename);
+
+        // ── Compute vault security data ─────────────────────────────────────
+        const perceptualHash = computePerceptualHash(canvas);
+        const blockchainAnchor = generateBlockchainAnchor(sha256Hash, now.getTime());
+        const certId = generateAuthorshipCertificateId(userId, deviceInfo.deviceId);
+
+        // ── Save to vaultImages (UserDashboard Vault tab) ───────────────────
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const thumbnail = reader.result;
+          const vaultEntry = {
+            id: `${assetId}_${now.getTime()}`,
+            assetId: assetId,
+            fileName: selectedFile ? selectedFile.name : filename,
+            fileSize: blob.size,
+            dateEncrypted: now.toISOString(),
+            timestamp: now.getTime(),
+            userId: userId,
+            status: 'verified',
+            thumbnail: thumbnail,
+            // ── vault security fields ──────────────────────────────────
+            fileHash: sha256Hash,
+            visualFingerprint: perceptualHash,
+            blockchainAnchor: blockchainAnchor,
+            certificateId: certId,
+            resolution: `${canvas.width} x ${canvas.height}`,
+            captureTimestamp: captureTimeData.timestamp,
+            captureSource: captureSource,
+            deviceId: deviceInfo.deviceId,
+            deviceName: deviceInfo.deviceName,
+            gpsLocation: gpsData,
+            ipAddress: ipInfo.ip,
+            ownerName: user?.name || userId,
+            ownerEmail: user?.email || null,
+          };
+
+          try {
+            const existing = JSON.parse(localStorage.getItem('vaultImages') || '[]');
+            existing.unshift(vaultEntry);
+            localStorage.setItem('vaultImages', JSON.stringify(existing.slice(0, 200)));
+
+            // Notify UserDashboard of the change
+            window.dispatchEvent(new StorageEvent('storage', {
+              key: 'vaultImages',
+              newValue: JSON.stringify(existing.slice(0, 200)),
+              url: window.location.href,
+              storageArea: localStorage
+            }));
+          } catch (e) {
+            console.error('Failed to save to vault:', e);
+          }
+        };
+        reader.readAsDataURL(blob);
+
+        // ── [UPDATED] Update forensicsStats via new helper ──────────────────
+        updateForensicsStats('encrypted', {
+          userId: userId,
+          fileName: selectedFile ? selectedFile.name : filename
+        });
+
+        const locationMsg = gpsData.available
+          ? `\nGPS: ${gpsData.latitude?.toFixed(6)}, ${gpsData.longitude?.toFixed(6)} (${gpsData.source})`
           : '\nGPS: Not available';
-        
+
         const timeMsg = `\nCapture Time: ${captureTimeData.dateString} (${captureTimeData.source})`;
         const deviceMsg = `\nDevice: ${deviceInfo.deviceName} (${deviceInfo.source})`;
         const ipMsg = `\nIP: ${ipInfo.ip} (${ipInfo.source})`;
-        
-        alert('UUID successfully embedded!' + timeMsg + deviceMsg + ipMsg + locationMsg + '\n\nDownload as PNG to preserve encryption.');
+
+        alert('UUID successfully embedded!' + timeMsg + deviceMsg + ipMsg + locationMsg + '\n\nFile saved as: ' + filename);
       }, 'image/png');
     };
     img.src = preview;
   };
-  
-// Rotate canvas by specified degrees (90, 180, 270)
-const rotateCanvas = (sourceCanvas, degrees) => {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  
-  // For 90° and 270°, swap width and height
-  if (degrees === 90 || degrees === 270) {
-    canvas.width = sourceCanvas.height;
-    canvas.height = sourceCanvas.width;
-  } else {
-    canvas.width = sourceCanvas.width;
-    canvas.height = sourceCanvas.height;
-  }
-  
-  // Move to center, rotate, draw
-  ctx.translate(canvas.width / 2, canvas.height / 2);
-  ctx.rotate((degrees * Math.PI) / 180);
-  ctx.drawImage(sourceCanvas, -sourceCanvas.width / 2, -sourceCanvas.height / 2);
-  
-  return canvas;
-};
 
-// Try extracting UUID from all 4 rotations
-const extractUUIDWithRotation = (sourceCanvas) => {
-  const rotations = [0, 90, 180, 270];
-  
-  for (const degrees of rotations) {
-    let canvas;
-    
-    if (degrees === 0) {
-      canvas = sourceCanvas;
-    } else {
-      canvas = rotateCanvas(sourceCanvas, degrees);
-    }
-    
+  // Rotate canvas by specified degrees (90, 180, 270)
+  const rotateCanvas = (sourceCanvas, degrees) => {
+    const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const uuidResult = extractUUIDAdvanced(imageData);
-    
-    if (uuidResult.found) {
-      return {
-        ...uuidResult,
-        rotationDetected: degrees,
-        rotationMessage: degrees === 0 
-          ? 'Original orientation' 
-          : `Image was rotated ${degrees}° clockwise`
-      };
+
+    // For 90° and 270°, swap width and height
+    if (degrees === 90 || degrees === 270) {
+      canvas.width = sourceCanvas.height;
+      canvas.height = sourceCanvas.width;
+    } else {
+      canvas.width = sourceCanvas.width;
+      canvas.height = sourceCanvas.height;
     }
-  }
-  
-  // No UUID found in any rotation
-  return {
-    found: false,
-    rotationDetected: null,
-    rotationMessage: 'No rotation detected'
+
+    // Move to center, rotate, draw
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((degrees * Math.PI) / 180);
+    ctx.drawImage(sourceCanvas, -sourceCanvas.width / 2, -sourceCanvas.height / 2);
+
+    return canvas;
   };
-};
- const saveReportToLocalStorage = (report, userInfo) => {
-  try {
-    const existingReports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
-    
-    const enhancedReport = {
-      ...report,
-      reportId: `RPT-${Date.now()}`,
-      createdAt: Date.now(),
-      userName: userInfo?.name || 'Unknown',
-      userEmail: userInfo?.email || null,
-      status: report.ownershipInfo.includes('Verified') ? 'Verified' : 'Unknown',
-      platformCopies: 0
+
+  // Try extracting UUID from all 4 rotations
+  const extractUUIDWithRotation = (sourceCanvas) => {
+    const rotations = [0, 90, 180, 270];
+
+    for (const degrees of rotations) {
+      let canvas;
+
+      if (degrees === 0) {
+        canvas = sourceCanvas;
+      } else {
+        canvas = rotateCanvas(sourceCanvas, degrees);
+      }
+
+      const ctx = canvas.getContext('2d');
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const uuidResult = extractUUIDAdvanced(imageData);
+
+      if (uuidResult.found) {
+        return {
+          ...uuidResult,
+          rotationDetected: degrees,
+          rotationMessage: degrees === 0
+            ? 'Original orientation'
+            : `Image was rotated ${degrees}° clockwise`
+        };
+      }
+    }
+
+    // No UUID found in any rotation
+    return {
+      found: false,
+      rotationDetected: null,
+      rotationMessage: 'No rotation detected'
     };
-    
-    existingReports.unshift(enhancedReport);
-    const limitedReports = existingReports.slice(0, 1000);
-    localStorage.setItem('analysisReports', JSON.stringify(limitedReports));
-    
-    console.log('Report saved successfully:', enhancedReport.reportId);
-  } catch (error) {
-    console.error('Error saving report:', error);
-  }
-};
+  };
+
+  const saveReportToLocalStorage = (report, userInfo) => {
+    try {
+      const existingReports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+
+      const enhancedReport = {
+        ...report,
+        reportId: `RPT-${Date.now()}`,
+        createdAt: Date.now(),
+        userName: userInfo?.name || 'Unknown',
+        userEmail: userInfo?.email || null,
+        status: report.ownershipInfo.includes('Verified') ? 'Verified' : 'Unknown',
+        platformCopies: 0
+      };
+
+      existingReports.unshift(enhancedReport);
+      const limitedReports = existingReports.slice(0, 1000);
+      localStorage.setItem('analysisReports', JSON.stringify(limitedReports));
+
+      console.log('Report saved successfully:', enhancedReport.reportId);
+    } catch (error) {
+      console.error('Error saving report:', error);
+    }
+  };
+
   const analyzeImage = async () => {
     if (!selectedFile) {
       alert('Please select an image to analyze');
@@ -1599,21 +1972,21 @@ const extractUUIDWithRotation = (sourceCanvas) => {
       canvas.height = img.height;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0);
-      
+
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      
+
       const uuidResult = extractUUIDWithRotation(canvas);
-      
+
       const classification = classifyImage(
-        canvas, 
-        imageData, 
-        selectedFile.size, 
+        canvas,
+        imageData,
+        selectedFile.size,
         selectedFile.name,
         uuidResult.found
       );
-      
+
       const totalPixels = canvas.width * canvas.height;
-      
+
       // Generate consistent Asset ID based on image content
       const assetId = generateAssetId(imageData);
 
@@ -1623,12 +1996,38 @@ const extractUUIDWithRotation = (sourceCanvas) => {
       const extractedIpAddress = uuidResult.found && uuidResult.ipAddress ? uuidResult.ipAddress : null;
       const extractedUserId = uuidResult.found ? uuidResult.userId : 'redt';
 
+      // [NEW] Detect if image was cropped using embedded original resolution
+      let cropInfo = null;
+      const currentResolution = canvas.width + ' x ' + canvas.height;
+
+      if (uuidResult.found && uuidResult.originalResolution) {
+        const originalRes = uuidResult.originalResolution;
+        if (originalRes !== currentResolution) {
+          // Image was cropped!
+          const originalParts = originalRes.split('x');
+          const originalWidth = parseInt(originalParts[0]);
+          const originalHeight = parseInt(originalParts[1]);
+          const originalPixels = originalWidth * originalHeight;
+          const currentPixels = canvas.width * canvas.height;
+          const remainingPercentage = ((currentPixels / originalPixels) * 100).toFixed(2);
+
+          cropInfo = {
+            isCropped: true,
+            originalResolution: originalRes,
+            currentResolution: currentResolution,
+            originalPixels: originalPixels.toLocaleString(),
+            currentPixels: currentPixels.toLocaleString(),
+            remainingPercentage: remainingPercentage + '%'
+          };
+        }
+      }
+
       const report = {
         assetId: assetId,
         uniqueUserId: extractedUserId,
         assetFileSize: (selectedFile.size / 1024).toFixed(2) + ' KB',
-        assetResolution: canvas.width + ' x ' + canvas.height,
-        userEncryptedResolution: uuidResult.found ? canvas.width + ' x ' + canvas.height : 'N/A',
+        assetResolution: currentResolution,
+        userEncryptedResolution: uuidResult.found ? currentResolution : 'N/A',
         timestamp: uuidResult.found && uuidResult.timestamp ? uuidResult.timestamp : null,
         captureLocationInfo: captureSource,
         gpsLocation: uuidResult.gps,
@@ -1644,19 +2043,43 @@ const extractUUIDWithRotation = (sourceCanvas) => {
         authorshipCertificateId: uuidResult.found
           ? generateAuthorshipCertificateId(extractedUserId, extractedDeviceId || deviceId)
           : 'Not Present',
-        authorshipCertificate: uuidResult.found 
-          ? 'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : 'File') + ')' 
+        authorshipCertificate: uuidResult.found
+          ? 'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : 'File') + ')'
           : 'Not Present',
         detectedCase: classification.detectedCase,
         confidence: classification.confidence,
         reasoning: classification.reasoning,
-		rotationDetected: uuidResult.rotationDetected,
-        rotationMessage: uuidResult.rotationMessage
+        metrics: classification.metrics,
+        rotationDetected: uuidResult.rotationDetected,
+        rotationMessage: uuidResult.rotationMessage,
+        cropInfo: cropInfo  // [NEW] crop detection result
       };
 
       setAnalysisReport(report);
-	  saveReportToLocalStorage(report, user);
+
+      // Save to legacy analysisReports storage
+      saveReportToLocalStorage(report, user);
+
       setProcessing(false);
+
+      // [NEW] Update dashboard stats via helper
+      updateForensicsStats('analyzed', {
+        fileName: selectedFile.name
+      });
+
+      // [NEW] Save to vault if image has a verified UUID
+      if (uuidResult.found) {
+        saveToVault(
+          preview,
+          selectedFile.name,
+          uuidResult.userId,
+          (selectedFile.size / 1024).toFixed(2) + ' KB',
+          null
+        );
+      }
+
+      // [NEW] Generate and save comprehensive certificate
+      saveCertificate(report, preview);
     };
     img.src = preview;
   };
@@ -1760,7 +2183,7 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                         <Camera className="inline mr-2" size={20} />
                         {cameraActive ? 'Capture Photo' : 'Open Camera'}
                       </button>
-                      
+
                       <label className="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition font-semibold text-center cursor-pointer">
                         <Upload className="inline mr-2" size={20} />
                         Upload Image
@@ -1774,40 +2197,40 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                     </div>
 
                     {cameraActive && (
-  <div className="relative bg-black rounded-lg overflow-hidden">
-    <video 
-      ref={videoRef} 
-      autoPlay 
-      playsInline 
-      muted
-      className="w-full rounded-lg" 
-      style={{ maxHeight: '500px' }}
-    />
-    
-    {/* Camera Controls Overlay */}
-    <div className="absolute top-2 right-2 flex gap-2">
-      {canSwitchCamera && (
-        <button
-          onClick={switchCamera}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-blue-700 transition flex items-center gap-2"
-        >
-          🔄 Switch Camera
-        </button>
-      )}
-      <button
-        onClick={stopCamera}
-        className="bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-red-700 transition"
-      >
-        ✕ Close
-      </button>
-    </div>
+                      <div className="relative bg-black rounded-lg overflow-hidden">
+                        <video
+                          ref={videoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full rounded-lg"
+                          style={{ maxHeight: '500px' }}
+                        />
 
-    {/* Camera Info Badge */}
-    <div className="absolute bottom-2 left-2 bg-black bg-opacity-60 text-white px-3 py-1 rounded text-sm">
-      📷 {facingMode === 'environment' ? 'Back Camera' : 'Front Camera'}
-    </div>
-  </div>
-)}
+                        {/* Camera Controls Overlay */}
+                        <div className="absolute top-2 right-2 flex gap-2">
+                          {canSwitchCamera && (
+                            <button
+                              onClick={switchCamera}
+                              className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-blue-700 transition flex items-center gap-2"
+                            >
+                              🔄 Switch Camera
+                            </button>
+                          )}
+                          <button
+                            onClick={stopCamera}
+                            className="bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-red-700 transition"
+                          >
+                            ✕ Close
+                          </button>
+                        </div>
+
+                        {/* Camera Info Badge */}
+                        <div className="absolute bottom-2 left-2 bg-black bg-opacity-60 text-white px-3 py-1 rounded text-sm">
+                          📷 {facingMode === 'environment' ? 'Back Camera' : 'Front Camera'}
+                        </div>
+                      </div>
+                    )}
                     <canvas ref={canvasRef} className="hidden" />
                   </div>
 
@@ -1817,14 +2240,14 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                         <h3 className="font-semibold mb-2 text-gray-700">Original Image</h3>
                         <img src={preview} alt="Original" className="w-full rounded-lg border" />
                       </div>
-                      
+
                       {encryptedImage && (
                         <div>
                           <h3 className="font-semibold mb-2 text-gray-700">Encrypted Image</h3>
                           <img src={encryptedImage} alt="Encrypted" className="w-full rounded-lg border" />
                           <a
                             href={encryptedImage}
-                            download="encrypted-image.png"
+                            download={encryptedFileName}
                             className="mt-3 block w-full bg-green-600 text-white px-4 py-2 rounded-lg text-center hover:bg-green-700"
                           >
                             <Download className="inline mr-2" size={18} />
@@ -1900,21 +2323,43 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                         <p className="font-bold text-yellow-900">{analysisReport.detectedCase}</p>
                         <p className="text-yellow-800 text-sm">Confidence: {analysisReport.confidence}%</p>
                       </div>
-                              
+
                       {analysisReport.rotationDetected !== null && analysisReport.rotationDetected !== 0 && (
                         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
-                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">🔄</span>
-                         <div>
-                            <p className="font-bold text-blue-900">Rotation Detected</p>
-                            <p className="text-blue-800 text-sm">{analysisReport.rotationMessage}</p>
-                            <p className="text-blue-700 text-xs mt-1">
-                              The encrypted data was successfully recovered despite rotation.
-                            </p>
-                         </div>
-                       </div>
-                     </div>
-                   )}
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl">🔄</span>
+                            <div>
+                              <p className="font-bold text-blue-900">Rotation Detected</p>
+                              <p className="text-blue-800 text-sm">{analysisReport.rotationMessage}</p>
+                              <p className="text-blue-700 text-xs mt-1">
+                                The encrypted data was successfully recovered despite rotation.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* [NEW] Crop Detection Banner */}
+                      {analysisReport.cropInfo && analysisReport.cropInfo.isCropped && (
+                        <div className="bg-purple-50 border-l-4 border-purple-500 p-4 mb-4">
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl">✂️</span>
+                            <div>
+                              <p className="font-bold text-purple-900">Crop Detected</p>
+                              <div className="text-purple-800 text-sm space-y-1 mt-1">
+                                <div><span className="font-semibold">Original Resolution:</span> {analysisReport.cropInfo.originalResolution}</div>
+                                <div><span className="font-semibold">Current Resolution:</span> {analysisReport.cropInfo.currentResolution}</div>
+                                <div><span className="font-semibold">Original Pixels:</span> {analysisReport.cropInfo.originalPixels}</div>
+                                <div><span className="font-semibold">Current Pixels:</span> {analysisReport.cropInfo.currentPixels}</div>
+                                <div><span className="font-semibold">Remaining:</span> {analysisReport.cropInfo.remainingPercentage}</div>
+                              </div>
+                              <p className="text-purple-700 text-xs mt-2">
+                                ✓ All encrypted ownership details preserved despite cropping. Only pixel count updated.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="grid md:grid-cols-2 gap-4">
                         <div className="bg-white p-4 rounded-lg border">
@@ -1934,7 +2379,7 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                             <div>
                               <span className="font-semibold">GPS Location:</span>{' '}
                               {analysisReport.gpsLocation?.available ? (
-                                <a 
+                                <a
                                   href={analysisReport.gpsLocation.mapsUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
@@ -1960,7 +2405,7 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                             </div>
                             <div>
                               <span className="font-semibold">Device ID:</span>{' '}
-                              <span 
+                              <span
                                 onClick={() => setShowDeviceDetails(true)}
                                 className="text-blue-600 underline cursor-pointer hover:text-blue-800"
                               >
@@ -1993,7 +2438,7 @@ const extractUUIDWithRotation = (sourceCanvas) => {
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4">
               <div className="flex justify-between items-center">
                 <h2 className="text-xl font-bold text-white">Device Information</h2>
-                <button 
+                <button
                   onClick={() => setShowDeviceDetails(false)}
                   className="text-white hover:text-gray-200 text-2xl font-bold"
                 >
@@ -2002,7 +2447,7 @@ const extractUUIDWithRotation = (sourceCanvas) => {
               </div>
               <p className="text-blue-100 text-sm mt-1">ID: {analysisReport.deviceId}</p>
             </div>
-            
+
             <div className="p-6 space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-gray-50 p-3 rounded-lg">
@@ -2046,12 +2491,12 @@ const extractUUIDWithRotation = (sourceCanvas) => {
                   <p className="font-semibold text-gray-800">{analysisReport.deviceDetails?.touchPoints || '0'}</p>
                 </div>
               </div>
-              
+
               <div className="bg-gray-50 p-3 rounded-lg">
                 <p className="text-xs text-gray-500 uppercase mb-1">Browser / User Agent</p>
                 <p className="font-semibold text-gray-800 text-xs break-all">{analysisReport.deviceDetails?.browser || 'Unknown'}</p>
               </div>
-              
+
               <button
                 onClick={() => setShowDeviceDetails(false)}
                 className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition font-semibold"

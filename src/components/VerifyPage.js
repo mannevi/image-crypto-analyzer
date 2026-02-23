@@ -297,7 +297,29 @@ function VerifyPage() {
       const uuidResult = extractUUIDWithRotation(canvas);
       
       // Get stored assets
-      const storedAssets = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+      // ── Search BOTH vaultImages (new) and analysisReports (legacy) ────────
+      const vaultAssets   = JSON.parse(localStorage.getItem('vaultImages')    || '[]');
+      const reportAssets  = JSON.parse(localStorage.getItem('analysisReports')|| '[]');
+
+      // Normalize every entry to a common shape so the rest of the code works uniformly
+      const normalize = (asset) => ({
+        ...asset,
+        // resolution: vault stores as "W x H" in `resolution`, reports in `assetResolution`
+        assetResolution: asset.assetResolution || asset.resolution || '0 x 0',
+        // file size: vault stores raw bytes in `fileSize`, reports store "X KB" string in `assetFileSize`
+        assetFileSize: asset.assetFileSize
+          || (asset.fileSize ? (asset.fileSize / 1024).toFixed(2) + ' KB' : null),
+        // owner id: vault uses `userId`, reports use `uniqueUserId`
+        uniqueUserId:   asset.uniqueUserId || asset.userId || null,
+        // owner name/email
+        userName:       asset.userName  || asset.ownerName  || null,
+        userEmail:      asset.userEmail || asset.ownerEmail || null,
+      });
+
+      const storedAssets = [
+        ...vaultAssets.map(normalize),
+        ...reportAssets.map(normalize),
+      ];
       
       let matchFound = false;
       let matchedAsset = null;
@@ -307,8 +329,9 @@ function VerifyPage() {
       if (uuidResult.found) {
         // UUID found - try to match with stored assets
         matchedAsset = storedAssets.find(asset => 
-          asset.uniqueUserId === uuidResult.userId ||
-          asset.deviceId === uuidResult.deviceId
+          (asset.uniqueUserId && asset.uniqueUserId === uuidResult.userId) ||
+          (asset.userId       && asset.userId       === uuidResult.userId) ||
+          (asset.deviceId     && asset.deviceId     === uuidResult.deviceId)
         );
         
         if (matchedAsset) {
@@ -456,7 +479,12 @@ function VerifyPage() {
                         {verificationResult.asset.userEmail || verificationResult.asset.uniqueUserId}
                       </div>
                       <div className="creator-meta">
-                        Created: {new Date(verificationResult.asset.timestamp || verificationResult.asset.createdAt).toLocaleDateString()}
+                        Created: {new Date(
+                          verificationResult.asset.dateEncrypted ||
+                          verificationResult.asset.timestamp    ||
+                          verificationResult.asset.createdAt    ||
+                          Date.now()
+                        ).toLocaleDateString()}
                       </div>
                     </div>
                   </div>
@@ -505,11 +533,14 @@ function VerifyPage() {
                     </div>
                     <div className="detail-row">
                       <span className="detail-label">Certificate ID:</span>
-                      <span className="detail-value">{verificationResult.asset.authorshipCertificateId}</span>
+                      <span className="detail-value">
+                        {verificationResult.asset.certificateId ||
+                         verificationResult.asset.authorshipCertificateId || '—'}
+                      </span>
                     </div>
                     <div className="detail-row">
                       <span className="detail-label">Device ID:</span>
-                      <span className="detail-value">{verificationResult.asset.deviceId}</span>
+                      <span className="detail-value">{verificationResult.asset.deviceId || '—'}</span>
                     </div>
                     <div className="detail-row">
                       <span className="detail-label">Original Resolution:</span>
@@ -517,8 +548,24 @@ function VerifyPage() {
                     </div>
                     <div className="detail-row">
                       <span className="detail-label">Original Size:</span>
-                      <span className="detail-value">{verificationResult.asset.assetFileSize}</span>
+                      <span className="detail-value">{verificationResult.asset.assetFileSize || '—'}</span>
                     </div>
+                    {verificationResult.asset.fileHash && (
+                      <div className="detail-row">
+                        <span className="detail-label">SHA-256:</span>
+                        <span className="detail-value">
+                          {verificationResult.asset.fileHash.substring(0, 20)}…
+                        </span>
+                      </div>
+                    )}
+                    {verificationResult.asset.blockchainAnchor && (
+                      <div className="detail-row">
+                        <span className="detail-label">Blockchain Anchor:</span>
+                        <span className="detail-value">
+                          {verificationResult.asset.blockchainAnchor.substring(0, 20)}…
+                        </span>
+                      </div>
+                    )}
                     {verificationResult.asset.gpsLocation?.available && (
                       <div className="detail-row">
                         <span className="detail-label">GPS Location:</span>
