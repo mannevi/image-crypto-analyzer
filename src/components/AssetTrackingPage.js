@@ -948,18 +948,68 @@ function AssetTrackingPage() {
   const [linkCopied, setLinkCopied]         = useState(false);
   const fileInputRef = useRef(null);
 
-  useEffect(() => {
-    const vault   = JSON.parse(localStorage.getItem('vaultImages')    || '[]');
-    const reports = JSON.parse(localStorage.getItem('analysisReports')|| '[]');
-    const vaultIds = new Set(vault.map(v => v.assetId));
-    const extras   = reports.filter(r => !vaultIds.has(r.assetId));
-    const combined = [...vault, ...extras];
-    const groups   = {};
-    combined.forEach(a => { const k = a.assetId || a.id; groups[k] = (groups[k] || 0) + 1; });
-    const withVersions = combined.map(a => ({ ...a, versionCount: groups[a.assetId || a.id] || 1 }));
-    setAssets(withVersions);
-    setFilteredAssets(withVersions);
-  }, []);
+useEffect(() => {
+  const loadAssets = async () => {
+    try {
+      // Try API first — works on any device
+      const { vaultAPI } = await import('../api/client');
+      const response = await vaultAPI.list();
+      const vault    = response.assets || [];
+
+      // Also load local reports for comparison history
+      const reports  = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+      const vaultIds = new Set(vault.map(v => v.asset_id || v.assetId));
+      const extras   = reports.filter(r => !vaultIds.has(r.assetId));
+
+      // Normalise API response fields to match existing UI expectations
+      const normalisedVault = vault.map(a => ({
+        ...a,
+        assetId:      a.asset_id      || a.assetId,
+        ownerName:    a.owner_name    || a.ownerName,
+        ownerEmail:   a.owner_email   || a.ownerEmail,
+        fileHash:     a.file_hash     || a.fileHash,
+        thumbnailUrl: a.thumbnail_url || a.thumbnailUrl,
+        dateEncrypted: a.created_at   || a.dateEncrypted,
+      }));
+
+      const combined     = [...normalisedVault, ...extras];
+      const groups       = {};
+      combined.forEach(a => {
+        const k = a.assetId || a.id;
+        groups[k] = (groups[k] || 0) + 1;
+      });
+      const withVersions = combined.map(a => ({
+        ...a,
+        versionCount: groups[a.assetId || a.id] || 1
+      }));
+
+      setAssets(withVersions);
+      setFilteredAssets(withVersions);
+
+    } catch (err) {
+      // Fallback to localStorage if API fails (offline or not logged in)
+      console.warn('API unavailable, using localStorage:', err.message);
+      const vault   = JSON.parse(localStorage.getItem('vaultImages')    || '[]');
+      const reports = JSON.parse(localStorage.getItem('analysisReports')|| '[]');
+      const vaultIds = new Set(vault.map(v => v.assetId));
+      const extras   = reports.filter(r => !vaultIds.has(r.assetId));
+      const combined = [...vault, ...extras];
+      const groups   = {};
+      combined.forEach(a => {
+        const k = a.assetId || a.id;
+        groups[k] = (groups[k] || 0) + 1;
+      });
+      const withVersions = combined.map(a => ({
+        ...a,
+        versionCount: groups[a.assetId || a.id] || 1
+      }));
+      setAssets(withVersions);
+      setFilteredAssets(withVersions);
+    }
+  };
+
+  loadAssets();
+}, []);
 
   const handleSearch = (query) => {
     setSearchQuery(query);

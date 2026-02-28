@@ -1,646 +1,539 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Users, BarChart3, Settings, LogOut, FileSearch, Camera,
+  Users, BarChart3, Settings, LogOut, FileSearch,
   Shield, CheckCircle, AlertTriangle, HardDrive, Activity,
-  FolderOpen
+  FolderOpen, RefreshCw, Eye, UserX, UserCheck, Clock
 } from 'lucide-react';
-import AssetsPage from './AssetsPage';
-import AssetTrackingPage from './AssetTrackingPage';
-import VerifyPage from './VerifyPage';
+import { adminAPI } from '../api/client';
 import './AdminDashboard.css';
 
-function AdminDashboard({ user, onLogout, users }) {
-  const [activeTab, setActiveTab] = useState('overview');
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [showUserProfile, setShowUserProfile] = useState(false);
-  const [userAssets, setUserAssets] = useState({});
-  const [metrics, setMetrics] = useState({
-    totalUsers: 0,
-    totalProofs: 0,
-    verificationsToday: 0,
-    tamperAlerts: 0,
-    storageUsed: '0 MB',
-    systemStatus: 'Active'
+function AdminDashboard({ user, onLogout }) {
+  const [activeTab,  setActiveTab]  = useState('overview');
+  const [stats,      setStats]      = useState({
+    total_users: 0, total_assets: 0, total_reports: 0, tampered_found: 0
   });
+  const [users,      setUsers]      = useState([]);
+  const [assets,     setAssets]     = useState([]);
+  const [reports,    setReports]    = useState([]);
+  const [auditLog,   setAuditLog]   = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [selectedUser, setSelectedUser] = useState(null);
   const navigate = useNavigate();
 
-  // Load and initialize metrics
-  useEffect(() => {
-    const storedMetrics = localStorage.getItem('pinit-metrics');
-    if (storedMetrics) {
-      const parsed = JSON.parse(storedMetrics);
-      setMetrics({ ...parsed, totalUsers: users.length });
-    } else {
-      const initialMetrics = {
-        totalUsers: users.length,
-        totalProofs: 0,
-        verificationsToday: 0,
-        tamperAlerts: 0,
-        storageUsed: '0 MB',
-        systemStatus: 'Active'
-      };
-      setMetrics(initialMetrics);
-      localStorage.setItem('pinit-metrics', JSON.stringify(initialMetrics));
-    }
-  }, [users.length]);
-
-  // Keep totalUsers synced with real users array
-  useEffect(() => {
-    setMetrics(prev => {
-      const updated = { ...prev, totalUsers: users.length };
-      localStorage.setItem('pinit-metrics', JSON.stringify(updated));
-      return updated;
-    });
-  }, [users.length]);
-
-  // One-time cleanup of auto-generated random user data
-  useEffect(() => {
-    const cleaned = localStorage.getItem('pinit-data-cleaned-v2');
-    if (!cleaned) {
-      Object.keys(localStorage)
-        .filter(key => key.startsWith('user-data-'))
-        .forEach(key => localStorage.removeItem(key));
-      localStorage.removeItem('user-assets');
-      localStorage.setItem('pinit-data-cleaned-v2', 'true');
-    }
-    const storedAssets = localStorage.getItem('user-assets');
-    if (storedAssets) {
-      setUserAssets(JSON.parse(storedAssets));
-    }
+  // ── Load all data ───────────────────────────────────────────────────────────
+  const loadStats = useCallback(async () => {
+    try {
+      const res = await adminAPI.getStats();
+      setStats(res);
+    } catch (err) { console.error('Stats error:', err.message); }
   }, []);
 
-  // Reload user assets when users list changes
-  useEffect(() => {
-    const storedAssets = localStorage.getItem('user-assets');
-    if (storedAssets) {
-      setUserAssets(JSON.parse(storedAssets));
-    }
-  }, [users]);
+  const loadUsers = useCallback(async () => {
+    try {
+      const res = await adminAPI.getUsers();
+      setUsers(res.users || []);
+    } catch (err) { console.error('Users error:', err.message); }
+  }, []);
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────
+  const loadAssets = useCallback(async () => {
+    try {
+      const res = await adminAPI.getAllVault();
+      setAssets(res.assets || []);
+    } catch (err) { console.error('Assets error:', err.message); }
+  }, []);
 
-  const getEnhancedUser = (userId) => {
-    const baseUser = users.find(u => u.id === userId);
-    if (!baseUser) return null;
+  const loadReports = useCallback(async () => {
+    try {
+      const res = await adminAPI.getAllReports();
+      setReports(res.reports || []);
+    } catch (err) { console.error('Reports error:', err.message); }
+  }, []);
 
-    const assets = userAssets[userId] || [];
-    const userData = localStorage.getItem(`user-data-${userId}`);
-    const parsedUserData = userData ? JSON.parse(userData) : {};
+  const loadAuditLog = useCallback(async () => {
+    try {
+      const res = await adminAPI.getAuditLog();
+      setAuditLog(res.logs || []);
+    } catch (err) { console.error('Audit log error:', err.message); }
+  }, []);
 
-    return {
-      ...baseUser,
-      phone: parsedUserData.phone || '',
-      proofCount: assets.length,
-      plan: parsedUserData.plan || 'Free',
-      status: parsedUserData.status || 'Active',
-      devices: parsedUserData.devices || [],
-      assets
-    };
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    await Promise.all([loadStats(), loadUsers(), loadAssets(), loadReports(), loadAuditLog()]);
+    setLoading(false);
+  }, [loadStats, loadUsers, loadAssets, loadReports, loadAuditLog]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ── Actions ─────────────────────────────────────────────────────────────────
+  const handleSuspend = async (userId) => {
+    if (!window.confirm('Suspend this user?')) return;
+    try {
+      await adminAPI.suspendUser(userId, 'Admin action');
+      await loadUsers();
+      alert('User suspended');
+    } catch (err) { alert('Failed: ' + err.message); }
   };
 
-  const updateMetrics = (metricUpdates) => {
-    setMetrics(prev => {
-      const updated = { ...prev, ...metricUpdates };
-      localStorage.setItem('pinit-metrics', JSON.stringify(updated));
-      return updated;
+  const handleActivate = async (userId) => {
+    try {
+      await adminAPI.activateUser(userId);
+      await loadUsers();
+      alert('User activated');
+    } catch (err) { alert('Failed: ' + err.message); }
+  };
+
+  const handleLogout = () => { onLogout(); navigate('/login'); };
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  const formatDate = (d) => {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
     });
   };
 
-  // ─── User Actions ─────────────────────────────────────────────────────────
-
-  const handleViewProofs = (userId) => {
-    setSelectedUser(getEnhancedUser(userId));
-    setShowUserProfile(true);
+  const storageUsed = () => {
+    const total = assets.reduce((sum, a) => {
+      const s = parseFloat(a.file_size) || 0;
+      return sum + s;
+    }, 0);
+    return total > 1024 ? (total / 1024).toFixed(1) + ' GB' : total.toFixed(1) + ' MB';
   };
 
-  const handleBlockUser = (userId) => {
-    const userData = localStorage.getItem(`user-data-${userId}`);
-    const parsedData = userData ? JSON.parse(userData) : {};
-    const newStatus = parsedData.status === 'Blocked' ? 'Active' : 'Blocked';
-    localStorage.setItem(`user-data-${userId}`, JSON.stringify({ ...parsedData, status: newStatus }));
-    alert(`User ${newStatus === 'Blocked' ? 'blocked' : 'unblocked'} successfully`);
-    setActiveTab('users');
-  };
-
-  const handleViewProfile = (userId) => {
-    setSelectedUser(getEnhancedUser(userId));
-    setShowUserProfile(true);
-  };
-
-  const closeUserProfile = () => {
-    setShowUserProfile(false);
-    setSelectedUser(null);
-  };
-
-  // ─── Navigation ───────────────────────────────────────────────────────────
-
-  const handleLogout = () => {
-    onLogout();
-    navigate('/login');
-  };
-
-  const launchAnalyzer = () => {
-    navigate('/analyzer');
-  };
-
-  // ─── Render ───────────────────────────────────────────────────────────────
-
+  // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="admin-dashboard">
-      {/* Top Navigation */}
-      <div className="dashboard-nav">
-        <div className="nav-brand">
-          <h2>🔍 Image Forensics App - Admin</h2>
-        </div>
+      <div className="admin-nav">
+        <div className="nav-brand"><h2>🔍 Image Forensics App - Admin</h2></div>
         <div className="nav-user">
-          <span>Admin: {user.username}</span>
+          <span>Admin: {user?.username || user?.name || 'Admin'}</span>
           <button onClick={handleLogout} className="btn-logout">
             <LogOut size={16} /> Logout
           </button>
         </div>
       </div>
 
-      {/* Main Layout */}
-      <div className="dashboard-container">
-        {/* Sidebar */}
-        <div className="sidebar">
+      <div className="admin-container">
+        <div className="admin-sidebar">
           <ul className="sidebar-menu">
-            <li
-              className={activeTab === 'overview' ? 'active' : ''}
-              onClick={() => setActiveTab('overview')}
-            >
-              <BarChart3 className="icon" /> Overview
-            </li>
-            <li
-              className={activeTab === 'assets' ? 'active' : ''}
-              onClick={() => setActiveTab('assets')}
-            >
-              <FolderOpen className="icon" /> Assets
-            </li>
-            <li
-              className={activeTab === 'tracking' ? 'active' : ''}
-              onClick={() => setActiveTab('tracking')}
-            >
-              <Activity className="icon" /> Track Assets
-            </li>
-            <li
-              className={activeTab === 'verify' ? 'active' : ''}
-              onClick={() => setActiveTab('verify')}
-            >
-              <Shield className="icon" /> Verify
-            </li>
-            <li
-              className={activeTab === 'users' ? 'active' : ''}
-              onClick={() => setActiveTab('users')}
-            >
-              <Users className="icon" /> Users
-            </li>
-            <li
-              className={activeTab === 'analytics' ? 'active' : ''}
-              onClick={() => setActiveTab('analytics')}
-            >
-              <BarChart3 className="icon" /> Analytics
-            </li>
-            <li
-              className={activeTab === 'settings' ? 'active' : ''}
-              onClick={() => setActiveTab('settings')}
-            >
-              <Settings className="icon" /> Settings
-            </li>
+            {[
+              ['overview',  <BarChart3 size={18} />, 'Overview'],
+              ['users',     <Users size={18} />,     'Users'],
+              ['assets',    <FolderOpen size={18} />, 'Assets'],
+              ['reports',   <FileSearch size={18} />, 'Reports'],
+              ['analytics', <Activity size={18} />,  'Analytics'],
+              ['settings',  <Settings size={18} />,  'Settings'],
+            ].map(([tab, icon, label]) => (
+              <li key={tab}
+                className={activeTab === tab ? 'active' : ''}
+                onClick={() => setActiveTab(tab)}>
+                {icon} {label}
+              </li>
+            ))}
           </ul>
         </div>
 
-        {/* Main Content */}
-        <div className="main-content">
+        <div className="admin-main">
 
-          {/* ── Overview ─────────────────────────────────────────────────── */}
+          {/* ── OVERVIEW ── */}
           {activeTab === 'overview' && (
-            <>
-              <h1>Dashboard Overview</h1>
-              <p className="subtitle">Image Forensics System Metrics</p>
-
-              {/* Stats Grid */}
-              <div className="stats-grid">
-                <div className="stat-card">
-                  <div className="stat-icon-wrapper">
-                    <Users className="stat-icon-lucide" size={32} color="#667eea" />
-                  </div>
-                  <div className="stat-info">
-                    <h3>{metrics.totalUsers}</h3>
-                    <p>Total Users</p>
-                  </div>
+            <div className="overview-section">
+              <div className="section-header">
+                <div>
+                  <h1>Dashboard Overview</h1>
+                  <p className="subtitle">Image Forensics System Metrics</p>
                 </div>
-
-                <div className="stat-card">
-                  <div className="stat-icon-wrapper">
-                    <Shield className="stat-icon-lucide" size={32} color="#10b981" />
-                  </div>
-                  <div className="stat-info">
-                    <h3>{metrics.totalProofs}</h3>
-                    <p>Total Assets</p>
-                    <span className="stat-label">Proofs Created</span>
-                  </div>
-                </div>
-
-                <div className="stat-card">
-                  <div className="stat-icon-wrapper">
-                    <CheckCircle className="stat-icon-lucide" size={32} color="#3b82f6" />
-                  </div>
-                  <div className="stat-info">
-                    <h3>{metrics.verificationsToday}</h3>
-                    <p>Today Checks</p>
-                    <span className="stat-label">Verifications Today</span>
-                  </div>
-                </div>
-
-                <div className="stat-card">
-                  <div className="stat-icon-wrapper">
-                    <AlertTriangle
-                      className="stat-icon-lucide"
-                      size={32}
-                      color={metrics.tamperAlerts > 0 ? '#f59e0b' : '#10b981'}
-                    />
-                  </div>
-                  <div className="stat-info">
-                    <h3 className={metrics.tamperAlerts > 0 ? 'warning-text' : ''}>{metrics.tamperAlerts}</h3>
-                    <p>Tampered</p>
-                    <span className="stat-label">Tamper Alerts</span>
-                  </div>
-                </div>
-
-                <div className="stat-card">
-                  <div className="stat-icon-wrapper">
-                    <HardDrive className="stat-icon-lucide" size={32} color="#8b5cf6" />
-                  </div>
-                  <div className="stat-info">
-                    <h3 className="storage-text">{metrics.storageUsed}</h3>
-                    <p>Storage Used</p>
-                  </div>
-                </div>
-
-                <div className="stat-card">
-                  <div className="stat-icon-wrapper">
-                    <Activity
-                      className="stat-icon-lucide"
-                      size={32}
-                      color={metrics.systemStatus === 'Active' ? '#10b981' : '#ef4444'}
-                    />
-                  </div>
-                  <div className="stat-info">
-                    <h3 className={`status-text ${metrics.systemStatus === 'Active' ? 'active' : 'inactive'}`}>
-                      {metrics.systemStatus}
-                    </h3>
-                    <p>System Health</p>
-                  </div>
-                </div>
+                <button onClick={loadAll} className="btn-refresh">
+                  <RefreshCw size={16} /> Refresh
+                </button>
               </div>
 
-              {/* Quick Actions */}
-              <div className="quick-actions">
-                <h2>Quick Actions</h2>
-                <div className="actions-grid">
-                  <button onClick={launchAnalyzer} className="action-card">
-                    <Camera size={40} />
-                    <h3>Launch Image Analyzer</h3>
-                    <p>Access encryption &amp; analysis tools</p>
-                  </button>
-                  <button onClick={() => setActiveTab('assets')} className="action-card">
-                    <FolderOpen size={40} />
-                    <h3>View Assets</h3>
-                    <p>Browse all encrypted assets</p>
-                  </button>
-                  <button onClick={() => setActiveTab('tracking')} className="action-card">
-                    <Activity size={40} />
-                    <h3>Track Assets</h3>
-                    <p>Monitor modifications &amp; versions</p>
-                  </button>
-                  <button onClick={() => setActiveTab('verify')} className="action-card">
-                    <Shield size={40} />
-                    <h3>Verify Image</h3>
-                    <p>Check image authenticity</p>
-                  </button>
-                  <button onClick={() => setActiveTab('users')} className="action-card">
-                    <Users size={40} />
-                    <h3>Manage Users</h3>
-                    <p>View and manage user accounts</p>
-                  </button>
-                  <button onClick={() => setActiveTab('analytics')} className="action-card">
-                    <BarChart3 size={40} />
-                    <h3>View Analytics</h3>
-                    <p>System performance &amp; statistics</p>
-                  </button>
-                </div>
-              </div>
-
-              {/* Recent Registrations */}
-              <div className="recent-users">
-                <h2>Recent Registrations</h2>
-                {users.length > 0 ? (
-                  <table className="users-table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Registered</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {users.slice(-5).reverse().map((u) => (
-                        <tr key={u.id}>
-                          <td>{u.name}</td>
-                          <td>{u.email}</td>
-                          <td>{new Date(u.createdAt).toLocaleDateString()}</td>
-                          <td><span className="badge-active">Active</span></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <p className="no-data">No users registered yet</p>
-                )}
-              </div>
-            </>
-          )}
-
-          {/* ── Assets ───────────────────────────────────────────────────── */}
-          {activeTab === 'assets' && <AssetsPage />}
-
-          {/* ── Track Assets ─────────────────────────────────────────────── */}
-          {activeTab === 'tracking' && <AssetTrackingPage />}
-
-          {/* ── Verify ───────────────────────────────────────────────────── */}
-          {activeTab === 'verify' && <VerifyPage />}
-
-          {/* ── Users ────────────────────────────────────────────────────── */}
-          {activeTab === 'users' && (
-            <div className="users-section">
-              <h1>User Management</h1>
-              <p className="subtitle">Total Users: {users.length}</p>
-              {users.length > 0 ? (
-                <table className="users-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Email</th>
-                      <th>Phone</th>
-                      <th>Signup Date</th>
-                      <th>Proof Count</th>
-                      <th>Plan</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {users.map((u) => {
-                      const eu = getEnhancedUser(u.id);
-                      return (
-                        <tr key={u.id}>
-                          <td>{u.name}</td>
-                          <td>{u.email}</td>
-                          <td>{eu.phone || '-'}</td>
-                          <td>{new Date(u.createdAt).toLocaleDateString()}</td>
-                          <td className="text-center">{eu.proofCount}</td>
-                          <td>
-                            <span className={`badge-plan badge-${eu.plan.toLowerCase()}`}>
-                              {eu.plan}
-                            </span>
-                          </td>
-                          <td>
-                            <span className={`badge-status ${eu.status === 'Active' ? 'badge-active' : 'badge-blocked'}`}>
-                              {eu.status}
-                            </span>
-                          </td>
-                          <td>
-                            <div className="action-buttons">
-                              <button
-                                className="btn-action btn-view"
-                                onClick={() => handleViewProofs(u.id)}
-                                title="View Proofs"
-                              >
-                                <FileSearch size={16} /> Proofs
-                              </button>
-                              <button
-                                className="btn-action btn-block"
-                                onClick={() => handleBlockUser(u.id)}
-                                title={eu.status === 'Blocked' ? 'Unblock User' : 'Block User'}
-                              >
-                                <Shield size={16} /> {eu.status === 'Blocked' ? 'Unblock' : 'Block'}
-                              </button>
-                              <button
-                                className="btn-action btn-profile"
-                                onClick={() => handleViewProfile(u.id)}
-                                title="View Profile"
-                              >
-                                <Users size={16} /> Profile
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              {loading ? (
+                <div className="loading-state">Loading data...</div>
               ) : (
-                <p className="no-data">No users registered yet</p>
+                <>
+                  <div className="stats-grid">
+                    <div className="stat-card">
+                      <div className="stat-icon users-icon"><Users size={32} /></div>
+                      <div className="stat-content">
+                        <h3>{stats.total_users || users.length}</h3>
+                        <p>Total Users</p>
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-icon assets-icon"><Shield size={32} /></div>
+                      <div className="stat-content">
+                        <h3>{stats.total_assets || assets.length}</h3>
+                        <p>Total Assets</p>
+                        <small>PROOFS CREATED</small>
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-icon reports-icon"><CheckCircle size={32} /></div>
+                      <div className="stat-content">
+                        <h3>{stats.total_reports || reports.length}</h3>
+                        <p>Total Reports</p>
+                        <small>VERIFICATIONS</small>
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-icon tamper-icon"><AlertTriangle size={32} /></div>
+                      <div className="stat-content">
+                        <h3>{stats.tampered_found || 0}</h3>
+                        <p>Tampered</p>
+                        <small>TAMPER ALERTS</small>
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-icon storage-icon"><HardDrive size={32} /></div>
+                      <div className="stat-content">
+                        <h3>{storageUsed()}</h3>
+                        <p>Storage Used</p>
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-icon health-icon"><Activity size={32} /></div>
+                      <div className="stat-content">
+                        <h3 style={{ color: '#10b981' }}>Active</h3>
+                        <p>System Health</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="recent-section">
+                    <h2>Recent Registrations</h2>
+                    {users.slice(0, 5).length > 0 ? (
+                      <table className="admin-table">
+                        <thead>
+                          <tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th>Status</th></tr>
+                        </thead>
+                        <tbody>
+                          {users.slice(0, 5).map((u, i) => (
+                            <tr key={i}>
+                              <td>{u.username}</td>
+                              <td>{u.email}</td>
+                              <td><span className={`role-badge ${u.role}`}>{u.role}</span></td>
+                              <td>{formatDate(u.created_at)}</td>
+                              <td>
+                                <span className={`status-dot ${u.is_active ? 'active' : 'inactive'}`}>
+                                  {u.is_active ? 'Active' : 'Suspended'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="empty-state">No users registered yet</div>
+                    )}
+                  </div>
+
+                  <div className="recent-section">
+                    <h2>Recent Activity</h2>
+                    {auditLog.slice(0, 5).length > 0 ? (
+                      <table className="admin-table">
+                        <thead>
+                          <tr><th>Action</th><th>Details</th><th>IP</th><th>Time</th></tr>
+                        </thead>
+                        <tbody>
+                          {auditLog.slice(0, 5).map((log, i) => (
+                            <tr key={i}>
+                              <td><span className="action-badge">{log.action}</span></td>
+                              <td>{JSON.stringify(log.details || {}).slice(0, 50)}</td>
+                              <td>{log.ip_address || '—'}</td>
+                              <td>{formatDate(log.created_at)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="empty-state">No activity recorded yet</div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           )}
 
-          {/* ── Analytics ────────────────────────────────────────────────── */}
-          {activeTab === 'analytics' && (
-            <div className="analytics-section">
-              <h1>Analytics</h1>
-              <p className="subtitle">System Performance Metrics</p>
-
-              <div className="analytics-summary">
-                <div className="summary-card">
-                  <h3>📊 Usage Statistics</h3>
-                  <ul>
-                    <li>Total Proofs: <strong>{metrics.totalProofs}</strong></li>
-                    <li>Today's Verifications: <strong>{metrics.verificationsToday}</strong></li>
-                    <li>Active Users: <strong>{metrics.totalUsers}</strong></li>
-                  </ul>
+          {/* ── USERS ── */}
+          {activeTab === 'users' && (
+            <div className="users-section">
+              <div className="section-header">
+                <div>
+                  <h1>User Management</h1>
+                  <p className="subtitle">{users.length} registered users</p>
                 </div>
-                <div className="summary-card">
-                  <h3>⚠️ Security Alerts</h3>
-                  <ul>
-                    <li>Tamper Alerts: <strong className={metrics.tamperAlerts > 0 ? 'warning-text' : ''}>{metrics.tamperAlerts}</strong></li>
-                    <li>System Status: <strong className="success-text">{metrics.systemStatus}</strong></li>
-                  </ul>
-                </div>
-                <div className="summary-card">
-                  <h3>💾 Storage</h3>
-                  <ul>
-                    <li>Used: <strong>{metrics.storageUsed}</strong></li>
-                    <li>Status: <strong className="success-text">Healthy</strong></li>
-                  </ul>
-                </div>
+                <button onClick={loadUsers} className="btn-refresh">
+                  <RefreshCw size={16} /> Refresh
+                </button>
               </div>
 
-              <div className="analytics-placeholder">
-                <p>📈</p>
-                <p>Detailed Charts Coming Soon</p>
+              {users.length > 0 ? (
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th><th>Email</th><th>Role</th>
+                      <th>Joined</th><th>Status</th><th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map((u, i) => (
+                      <tr key={i}>
+                        <td>{u.username}</td>
+                        <td>{u.email}</td>
+                        <td><span className={`role-badge ${u.role}`}>{u.role}</span></td>
+                        <td>{formatDate(u.created_at)}</td>
+                        <td>
+                          <span className={`status-dot ${u.is_active ? 'active' : 'inactive'}`}>
+                            {u.is_active ? 'Active' : 'Suspended'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="action-buttons">
+                            <button
+                              onClick={() => { setSelectedUser(u); }}
+                              className="btn-action btn-view" title="View">
+                              <Eye size={14} />
+                            </button>
+                            {u.is_active ? (
+                              <button
+                                onClick={() => handleSuspend(u.id)}
+                                className="btn-action btn-delete" title="Suspend"
+                                disabled={u.role === 'admin'}>
+                                <UserX size={14} />
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleActivate(u.id)}
+                                className="btn-action btn-view" title="Activate">
+                                <UserCheck size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty-state">No users found</div>
+              )}
+
+              {selectedUser && (
+                <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
+                  <div className="modal-content" onClick={e => e.stopPropagation()}>
+                    <div className="modal-header">
+                      <h2>User Profile</h2>
+                      <button className="modal-close" onClick={() => setSelectedUser(null)}>×</button>
+                    </div>
+                    <div className="modal-body">
+                      <div className="user-profile-details">
+                        {[
+                          ['Name',     selectedUser.username],
+                          ['Email',    selectedUser.email],
+                          ['Role',     selectedUser.role],
+                          ['Status',   selectedUser.is_active ? 'Active' : 'Suspended'],
+                          ['Joined',   formatDate(selectedUser.created_at)],
+                          ['User ID',  selectedUser.id],
+                        ].map(([label, value]) => (
+                          <div key={label} className="detail-row">
+                            <span className="detail-label">{label}:</span>
+                            <span className="detail-value">{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── ASSETS ── */}
+          {activeTab === 'assets' && (
+            <div className="assets-section">
+              <div className="section-header">
+                <div>
+                  <h1>All Assets</h1>
+                  <p className="subtitle">{assets.length} total assets in vault</p>
+                </div>
+                <button onClick={loadAssets} className="btn-refresh">
+                  <RefreshCw size={16} /> Refresh
+                </button>
+              </div>
+
+              {assets.length > 0 ? (
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>File Name</th><th>Asset ID</th><th>Owner</th>
+                      <th>Size</th><th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {assets.map((a, i) => (
+                      <tr key={i}>
+                        <td>{a.file_name || '—'}</td>
+                        <td><code className="uuid-small">{a.asset_id}</code></td>
+                        <td>{a.owner_name || '—'}</td>
+                        <td>{a.file_size || '—'}</td>
+                        <td>{formatDate(a.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty-state">No assets in vault yet</div>
+              )}
+            </div>
+          )}
+
+          {/* ── REPORTS ── */}
+          {activeTab === 'reports' && (
+            <div className="reports-section">
+              <div className="section-header">
+                <div>
+                  <h1>Analysis Reports</h1>
+                  <p className="subtitle">{reports.length} total reports</p>
+                </div>
+                <button onClick={loadReports} className="btn-refresh">
+                  <RefreshCw size={16} /> Refresh
+                </button>
+              </div>
+
+              {reports.length > 0 ? (
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Asset ID</th><th>Verdict</th><th>Confidence</th>
+                      <th>Tool</th><th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reports.map((r, i) => (
+                      <tr key={i}>
+                        <td><code className="uuid-small">{r.asset_id || '—'}</code></td>
+                        <td>
+                          <span className={`status-dot ${r.is_tampered ? 'inactive' : 'active'}`}>
+                            {r.is_tampered ? '⚠ Tampered' : '✓ Original'}
+                          </span>
+                        </td>
+                        <td>{r.confidence}%</td>
+                        <td>{r.editing_tool || '—'}</td>
+                        <td>{formatDate(r.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty-state">No reports yet</div>
+              )}
+            </div>
+          )}
+
+          {/* ── ANALYTICS ── */}
+          {activeTab === 'analytics' && (
+            <div className="analytics-section">
+              <div className="section-header">
+                <div>
+                  <h1>Analytics</h1>
+                  <p className="subtitle">System usage overview</p>
+                </div>
+                <button onClick={loadAll} className="btn-refresh">
+                  <RefreshCw size={16} /> Refresh
+                </button>
+              </div>
+
+              <div className="analytics-grid">
+                <div className="analytics-card">
+                  <h3>User Activity</h3>
+                  <div className="analytics-stat">
+                    <span className="big-number">{users.filter(u => u.is_active).length}</span>
+                    <span className="stat-label">Active Users</span>
+                  </div>
+                  <div className="analytics-stat">
+                    <span className="big-number">{users.filter(u => !u.is_active).length}</span>
+                    <span className="stat-label">Suspended Users</span>
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <h3>Image Analysis</h3>
+                  <div className="analytics-stat">
+                    <span className="big-number">{reports.length}</span>
+                    <span className="stat-label">Total Analyses</span>
+                  </div>
+                  <div className="analytics-stat">
+                    <span className="big-number" style={{ color: '#ef4444' }}>
+                      {reports.filter(r => r.is_tampered).length}
+                    </span>
+                    <span className="stat-label">Tampered Detected</span>
+                  </div>
+                  <div className="analytics-stat">
+                    <span className="big-number" style={{ color: '#10b981' }}>
+                      {reports.filter(r => !r.is_tampered).length}
+                    </span>
+                    <span className="stat-label">Original Verified</span>
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <h3>Vault Storage</h3>
+                  <div className="analytics-stat">
+                    <span className="big-number">{assets.length}</span>
+                    <span className="stat-label">Total Assets</span>
+                  </div>
+                  <div className="analytics-stat">
+                    <span className="big-number">{storageUsed()}</span>
+                    <span className="stat-label">Storage Used</span>
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <h3>Recent Audit Log</h3>
+                  <div className="audit-list">
+                    {auditLog.slice(0, 8).map((log, i) => (
+                      <div key={i} className="audit-item">
+                        <span className="audit-action">{log.action}</span>
+                        <span className="audit-time">{formatDate(log.created_at)}</span>
+                      </div>
+                    ))}
+                    {auditLog.length === 0 && <p>No activity yet</p>}
+                  </div>
+                </div>
               </div>
             </div>
           )}
 
-          {/* ── Settings ─────────────────────────────────────────────────── */}
+          {/* ── SETTINGS ── */}
           {activeTab === 'settings' && (
             <div className="settings-section">
-              <h1>System Settings</h1>
-
+              <h1>Settings</h1>
+              <p className="subtitle">System configuration</p>
               <div className="settings-card">
-                <h3>General Settings</h3>
-                <div className="setting-item">
-                  <label><input type="checkbox" defaultChecked /> Enable user registration</label>
+                <h3>Admin Account</h3>
+                <div className="settings-info">
+                  <div className="detail-row">
+                    <span className="detail-label">Username:</span>
+                    <span className="detail-value">{user?.username || 'admin'}</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Email:</span>
+                    <span className="detail-value">{user?.email || '—'}</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Role:</span>
+                    <span className="detail-value">Administrator</span>
+                  </div>
                 </div>
-                <div className="setting-item">
-                  <label><input type="checkbox" defaultChecked /> Enable image encryption</label>
-                </div>
-                <div className="setting-item">
-                  <label><input type="checkbox" defaultChecked /> Enable GPS tracking</label>
-                </div>
-                <div className="setting-item">
-                  <label><input type="checkbox" defaultChecked /> Enable device fingerprinting</label>
-                </div>
-                <button className="btn-save">Save Settings</button>
-              </div>
-
-              <div className="settings-card">
-                <h3>Metrics Management</h3>
-                <p className="info-text">
-                  System metrics are updated dynamically based on actual events.
-                  Use reset only for testing purposes.
-                </p>
-                <button
-                  className="btn-save"
-                  onClick={() => {
-                    const reset = {
-                      totalUsers: users.length,
-                      totalProofs: 0,
-                      verificationsToday: 0,
-                      tamperAlerts: 0,
-                      storageUsed: '0 MB',
-                      systemStatus: 'Active'
-                    };
-                    setMetrics(reset);
-                    localStorage.setItem('pinit-metrics', JSON.stringify(reset));
-                    alert('Metrics reset successfully');
-                  }}
-                >
-                  Reset All Metrics
-                </button>
               </div>
             </div>
           )}
 
         </div>
       </div>
-
-      {/* ── User Profile Modal ─────────────────────────────────────────────── */}
-      {showUserProfile && selectedUser && (
-        <div className="modal-overlay" onClick={closeUserProfile}>
-          <div className="modal-content user-profile-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>User Profile</h2>
-              <button className="btn-close" onClick={closeUserProfile}>×</button>
-            </div>
-
-            <div className="modal-body">
-              <div className="profile-info-section">
-                <h3>User Information</h3>
-                <div className="profile-info-grid">
-                  <div className="info-item">
-                    <span className="info-label">Name:</span>
-                    <span className="info-value">{selectedUser.name}</span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Email:</span>
-                    <span className="info-value">{selectedUser.email}</span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Phone:</span>
-                    <span className="info-value">{selectedUser.phone || 'Not provided'}</span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Signup Date:</span>
-                    <span className="info-value">{new Date(selectedUser.createdAt).toLocaleDateString()}</span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Total Proofs:</span>
-                    <span className="info-value">{selectedUser.proofCount}</span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Plan:</span>
-                    <span className={`badge-plan badge-${selectedUser.plan.toLowerCase()}`}>
-                      {selectedUser.plan}
-                    </span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Status:</span>
-                    <span className={`badge-status ${selectedUser.status === 'Active' ? 'badge-active' : 'badge-blocked'}`}>
-                      {selectedUser.status}
-                    </span>
-                  </div>
-                  <div className="info-item">
-                    <span className="info-label">Devices:</span>
-                    <span className="info-value">
-                      {selectedUser.devices?.length > 0
-                        ? selectedUser.devices.join(', ')
-                        : 'No devices registered'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="profile-assets-section">
-                <h3>User Assets ({selectedUser.assets.length})</h3>
-                {selectedUser.assets.length > 0 ? (
-                  <table className="users-table">
-                    <thead>
-                      <tr>
-                        <th>Asset ID</th>
-                        <th>Name</th>
-                        <th>Created Date</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedUser.assets.map((asset, index) => (
-                        <tr key={asset.id || index}>
-                          <td>{asset.id || `ASSET-${index + 1}`}</td>
-                          <td>{asset.name || 'Encrypted Image'}</td>
-                          <td>{asset.createdAt ? new Date(asset.createdAt).toLocaleDateString() : 'N/A'}</td>
-                          <td>{asset.type || 'Image'}</td>
-                          <td><span className="badge-active">Verified</span></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <p className="no-data">No assets created yet</p>
-                )}
-              </div>
-            </div>
-
-            <div className="modal-footer">
-              <button className="btn-secondary" onClick={closeUserProfile}>Close</button>
-              <button
-                className="btn-danger"
-                onClick={() => {
-                  handleBlockUser(selectedUser.id);
-                  closeUserProfile();
-                }}
-              >
-                {selectedUser.status === 'Blocked' ? 'Unblock User' : 'Block User'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -64,69 +64,47 @@ const saveToVault = (imageData, fileName, userId, fileSize, imageBlob) => {
   try {
     const canvas = document.createElement('canvas');
     const img = new Image();
-
     img.onload = () => {
       const size = 80;
       canvas.width = size;
       canvas.height = size;
       const ctx = canvas.getContext('2d');
-
       const scale = Math.max(size / img.width, size / img.height);
       const x = (size / 2) - (img.width / 2) * scale;
       const y = (size / 2) - (img.height / 2) * scale;
-
       ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
-
       const thumbnail = canvas.toDataURL('image/jpeg', 0.4);
-
-      const savedVault = localStorage.getItem('vaultImages');
-      const vault = savedVault ? JSON.parse(savedVault) : [];
-
       const deviceId = typeof getDeviceFingerprint === 'function'
-        ? getDeviceFingerprint()
-        : 'UNKNOWN';
+        ? getDeviceFingerprint() : 'UNKNOWN';
+      const assetId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
 
-      const vaultEntry = {
-        id: Date.now() + '-' + Math.random().toString(36).substr(2, 9),
-        fileName: fileName,
-        fileSize: fileSize,
-        userId: userId,
-        dateEncrypted: new Date().toISOString(),
-        status: 'Verified',
-        thumbnail: thumbnail,
-        deviceId: deviceId,
-        gpsLocation: 'Encrypted'
-      };
-
-      vault.unshift(vaultEntry);
-
-      if (vault.length > 20) {
-        vault.splice(20);
-      }
-
-      localStorage.setItem('vaultImages', JSON.stringify(vault));
-
-      window.dispatchEvent(new StorageEvent('storage', {
-        key: 'vaultImages',
-        newValue: JSON.stringify(vault),
-        url: window.location.href,
-        storageArea: localStorage
-      }));
-
-      console.log('✅ Image saved to vault:', vaultEntry.fileName);
+      // Save to backend API only
+      import('../api/client').then(({ vaultAPI }) => {
+        vaultAPI.save({
+           asset_id:           assetId,
+           owner_name:         userId,
+           file_name:          fileName,
+           file_size:          fileSize,
+           thumbnail_base64:   thumbnail,
+           device_id:          deviceId,
+           certificate_id:     null,
+           owner_email:        null,
+           file_hash:          null,
+           visual_fingerprint: null,
+           blockchain_anchor:  null,
+           resolution:         null,
+           capture_timestamp:  new Date().toISOString(),
+        }).then(() => {
+          console.log('✅ Saved to vault:', fileName);
+        }).catch(err => console.warn('Vault save failed:', err.message));
+      }).catch(err => console.warn('API import failed:', err.message));
     };
-
-    img.onerror = () => {
-      console.error('❌ Error creating thumbnail');
-    };
-
+    img.onerror = () => console.error('❌ Error creating thumbnail');
     img.src = imageData;
-
   } catch (error) {
     console.error('❌ Error saving to vault:', error);
   }
 };
-
 // ============================================
 // CERTIFICATE GENERATION HELPER  [NEW - from second file]
 // ============================================
@@ -1929,30 +1907,57 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     };
   };
 
-  const saveReportToLocalStorage = (report, userInfo) => {
-    try {
-      const existingReports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+const saveReportToLocalStorage = (report, userInfo) => {
+  try {
+    const enhancedReport = {
+      ...report,
+      reportId:  `RPT-${Date.now()}`,
+      createdAt: Date.now(),
+      userName:  userInfo?.name  || userInfo?.username || 'Unknown',
+      userEmail: userInfo?.email || null,
+    };
 
-      const enhancedReport = {
-        ...report,
-        reportId: `RPT-${Date.now()}`,
-        createdAt: Date.now(),
-        userName: userInfo?.name || 'Unknown',
-        userEmail: userInfo?.email || null,
-        status: report.ownershipInfo.includes('Verified') ? 'Verified' : 'Unknown',
-        platformCopies: 0
-      };
+    // Save comparison report to backend
+    import('../api/client').then(({ compareAPI, certAPI }) => {
 
-      existingReports.unshift(enhancedReport);
-      const limitedReports = existingReports.slice(0, 1000);
-      localStorage.setItem('analysisReports', JSON.stringify(limitedReports));
+      // Save analysis report
+      compareAPI.save({
+         asset_id:            enhancedReport.assetId         || 'UNKNOWN',
+  is_tampered:         enhancedReport.isTampered       || false,
+confidence: Math.round(enhancedReport.confidence || 0),
+phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null,  visual_verdict:      enhancedReport.visualVerdict    || 'Unknown',
+  editing_tool:        enhancedReport.editingTool      || 'Unknown',
+  changes:             enhancedReport.changes          || [],
+  pixel_analysis:      enhancedReport.pixelAnalysis    || {},
+  uploaded_resolution: enhancedReport.uploadedResolution || null,
+  uploaded_size:       String(enhancedReport.uploadedSize || ''),
+  phash_sim:           enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null,
+  original_capture_time: null,
+  modified_file_time:    null,
+      }).then(() => {
+        console.log('✅ Report saved:', enhancedReport.reportId);
+      }).catch(err => console.warn('Report save failed:', err.message));
 
-      console.log('Report saved successfully:', enhancedReport.reportId);
-    } catch (error) {
-      console.error('Error saving report:', error);
-    }
-  };
+      // Save certificate if present
+      if (enhancedReport.authorshipCertificateId) {
+        certAPI.save({
+          certificate_id: enhancedReport.authorshipCertificateId,
+          asset_id:       enhancedReport.assetId,
+          confidence:     enhancedReport.confidence,
+          status:         enhancedReport.ownershipInfo?.includes('Verified') ? 'Verified' : 'Unknown',
+          analysis_data:  enhancedReport,
+          image_preview:  enhancedReport.imagePreview || null,
+        }).then(() => {
+          console.log('✅ Certificate saved:', enhancedReport.authorshipCertificateId);
+        }).catch(err => console.warn('Certificate save failed:', err.message));
+      }
 
+    }).catch(err => console.warn('API import failed:', err.message));
+
+  } catch (error) {
+    console.error('Error saving report:', error);
+  }
+};
   const analyzeImage = async () => {
     if (!selectedFile) {
       alert('Please select an image to analyze');
