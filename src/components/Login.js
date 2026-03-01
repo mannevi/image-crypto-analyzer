@@ -25,7 +25,7 @@ function Login({ onLogin }) {
         ? { username: formData.username, password: formData.password }
         : { email: formData.email,       password: formData.password };
 
-      const res  = await fetch(`http://localhost:8000${endpoint}`, {
+      const res  = await fetch(`https://pinit-backend.onrender.com${endpoint}`, {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body   : JSON.stringify(body)

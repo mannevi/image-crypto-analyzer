@@ -31,7 +31,7 @@ function Register() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('http://localhost:8000/auth/register', {
+      const res = await fetch('https://pinit-backend.onrender.com/auth/register', {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body   : JSON.stringify({
@@ -57,7 +57,7 @@ function Register() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('http://localhost:8000/auth/verify-otp', {
+      const res = await fetch('https://pinit-backend.onrender.com/auth/verify-otp', {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body   : JSON.stringify({ email: formData.email, code: otp })
@@ -75,7 +75,7 @@ function Register() {
   const handleResendOTP = async () => {
     setError('');
     try {
-      await fetch('http://localhost:8000/auth/resend-otp', {
+      await fetch('https://pinit-backend.onrender.com/auth/resend-otp', {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body   : JSON.stringify({ email: formData.email })
