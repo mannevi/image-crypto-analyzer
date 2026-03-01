@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, Upload, FileSearch, Download, AlertCircle, CheckCircle, ArrowLeft } from 'lucide-react';
+import { Camera, Upload, FileSearch, Download, ArrowLeft } from 'lucide-react';
 
 // ============================================
 // HELPER FUNCTIONS
@@ -1931,7 +1931,6 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
   pixel_analysis:      enhancedReport.pixelAnalysis    || {},
   uploaded_resolution: enhancedReport.uploadedResolution || null,
   uploaded_size:       String(enhancedReport.uploadedSize || ''),
-  phash_sim:           enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null,
   original_capture_time: null,
   modified_file_time:    null,
       }).then(() => {

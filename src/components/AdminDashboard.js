@@ -1,10 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Users, BarChart3, Settings, LogOut, FileSearch,
-  Shield, CheckCircle, AlertTriangle, HardDrive, Activity,
-  FolderOpen, RefreshCw, Eye, UserX, UserCheck, Clock
-} from 'lucide-react';
+import { Users, BarChart3, Settings, LogOut, FileSearch, Shield, CheckCircle, AlertTriangle, HardDrive, Activity, FolderOpen, RefreshCw, Eye, UserX, UserCheck } from 'lucide-react';
+
 import { adminAPI } from '../api/client';
 import './AdminDashboard.css';
 
