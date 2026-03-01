@@ -1,5 +1,4 @@
-const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-
+const BASE_URL = process.env.REACT_APP_API_URL || 'https://pinit-backend.onrender.com';
 const getToken = () => sessionStorage.getItem('pinit_token');
 
 const request = async (method, endpoint, body = null, requiresAuth = true) => {
