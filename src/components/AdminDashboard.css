@@ -1,3 +1,44 @@
+/* ── Root wrapper ────────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+.admin-dashboard {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f7fafc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ── Nav user section ────────────────────────────────────────────────────────── */
+.nav-user {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+  color: #4a5568;
+}
+
+/* ── Logout button ───────────────────────────────────────────────────────────── */
+.btn-logout {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #e53e3e;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+.btn-logout:hover {
+  background: #c53030;
+}
+
 /* ── New layout classes ─────────────────────────────────────────────────────── */
 .admin-nav {
   background: white;
@@ -274,4 +315,4 @@
 .loading-state {
   text-align: center; padding: 60px;
   color: #a0aec0; font-size: 16px;
-}
+}.admin-main-content { width: 100%; }

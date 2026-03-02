@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, BarChart3, Settings, LogOut, FileSearch, Shield, CheckCircle, AlertTriangle, HardDrive, Activity, FolderOpen, RefreshCw, Eye, UserX, UserCheck } from 'lucide-react';
+import { Users, BarChart3, Settings, FileSearch, Shield, CheckCircle, AlertTriangle, HardDrive, Activity, FolderOpen, RefreshCw, Eye, UserX, UserCheck } from 'lucide-react';
 
 import { adminAPI } from '../api/client';
 import './AdminDashboard.css';
@@ -80,8 +80,6 @@ function AdminDashboard({ user, onLogout }) {
     } catch (err) { alert('Failed: ' + err.message); }
   };
 
-  const handleLogout = () => { onLogout(); navigate('/login'); };
-
   // ── Helpers ─────────────────────────────────────────────────────────────────
   const formatDate = (d) => {
     if (!d) return '—';
@@ -101,38 +99,7 @@ function AdminDashboard({ user, onLogout }) {
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="admin-dashboard">
-      <div className="admin-nav">
-        <div className="nav-brand"><h2>🔍 Image Forensics App - Admin</h2></div>
-        <div className="nav-user">
-          <span>Admin: {user?.username || user?.name || 'Admin'}</span>
-          <button onClick={handleLogout} className="btn-logout">
-            <LogOut size={16} /> Logout
-          </button>
-        </div>
-      </div>
-
-      <div className="admin-container">
-        <div className="admin-sidebar">
-          <ul className="sidebar-menu">
-            {[
-              ['overview',  <BarChart3 size={18} />, 'Overview'],
-              ['users',     <Users size={18} />,     'Users'],
-              ['assets',    <FolderOpen size={18} />, 'Assets'],
-              ['reports',   <FileSearch size={18} />, 'Reports'],
-              ['analytics', <Activity size={18} />,  'Analytics'],
-              ['settings',  <Settings size={18} />,  'Settings'],
-            ].map(([tab, icon, label]) => (
-              <li key={tab}
-                className={activeTab === tab ? 'active' : ''}
-                onClick={() => setActiveTab(tab)}>
-                {icon} {label}
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="admin-main">
+    <div className="admin-main-content">
 
           {/* ── OVERVIEW ── */}
           {activeTab === 'overview' && (
@@ -503,7 +470,27 @@ function AdminDashboard({ user, onLogout }) {
               </div>
             </div>
           )}
+{activeTab === 'track' && (
+  <div>
+    <div className="section-header">
+      <h1>Track Assets</h1>
+    </div>
+    <button onClick={() => navigate('/admin/track')} className="btn-refresh">
+      Open Asset Tracker
+    </button>
+  </div>
+)}
 
+{activeTab === 'verify' && (
+  <div>
+    <div className="section-header">
+      <h1>Verify Image</h1>
+    </div>
+    <button onClick={() => navigate('/admin/verify')} className="btn-refresh">
+      Open Verify Page
+    </button>
+  </div>
+)}
           {/* ── SETTINGS ── */}
           {activeTab === 'settings' && (
             <div className="settings-section">
@@ -529,8 +516,6 @@ function AdminDashboard({ user, onLogout }) {
             </div>
           )}
 
-        </div>
-      </div>
     </div>
   );
 }

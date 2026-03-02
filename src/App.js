@@ -4,8 +4,11 @@ import Login from './components/Login';
 import Register from './components/Register';
 import UserDashboard from './components/UserDashboard';
 import AdminDashboard from './components/AdminDashboard';
+import AdminLayout from './components/AdminLayout';
 import ImageCryptoAnalyzer from './components/ImageCryptoAnalyzer';
 import AssetDetailPage from './components/AssetDetailPage';
+import AssetTrackingPage from './components/AssetTrackingPage';
+import VerifyPage from './components/VerifyPage';
 import ImageTravelHistory from './components/ImageTravelHistory';
 import PublicVerifyPage from './components/PublicVerifyPage';
 import { getUser, getToken, removeToken, saveToken, saveUser } from './utils/auth';
@@ -15,7 +18,6 @@ function App() {
   const [userRole,    setUserRole]    = useState(null);
   const [loading,     setLoading]     = useState(true);
 
-  // Rehydrate session on mount
   useEffect(() => {
     const token = getToken();
     const user  = getUser();
@@ -26,13 +28,12 @@ function App() {
     setLoading(false);
   }, []);
 
-  // Called from Login.js after successful login
   const handleLogin = (user, token) => {
     saveToken(token);
     saveUser(user);
     setCurrentUser(user);
     setUserRole(user.role);
-      localStorage.setItem(`lastLogin_${user.email}`, new Date().toISOString());
+    localStorage.setItem(`lastLogin_${user.email}`, new Date().toISOString());
   };
 
   const handleLogout = () => {
@@ -98,12 +99,34 @@ function App() {
           }
         />
 
-        {/* Admin routes */}
+        {/* ── Admin routes — all wrapped in AdminLayout ── */}
         <Route
           path="/admin/dashboard"
           element={
             <RequireAuth role="admin">
-              <AdminDashboard user={currentUser} onLogout={handleLogout} users={[]} />
+              <AdminLayout user={currentUser} onLogout={handleLogout}>
+                <AdminDashboard user={currentUser} onLogout={handleLogout} />
+              </AdminLayout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/assets"
+          element={
+            <RequireAuth role="admin">
+              <AdminLayout user={currentUser} onLogout={handleLogout}>
+                <AssetTrackingPage user={currentUser} />
+              </AdminLayout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/verify"
+          element={
+            <RequireAuth role="admin">
+              <AdminLayout user={currentUser} onLogout={handleLogout}>
+                <VerifyPage user={currentUser} />
+              </AdminLayout>
             </RequireAuth>
           }
         />
@@ -111,7 +134,9 @@ function App() {
           path="/admin/track/:assetId"
           element={
             <RequireAuth role="admin">
-              <AssetDetailPage user={currentUser} />
+              <AdminLayout user={currentUser} onLogout={handleLogout}>
+                <AssetDetailPage user={currentUser} />
+              </AdminLayout>
             </RequireAuth>
           }
         />
@@ -119,7 +144,9 @@ function App() {
           path="/admin/track/:assetId/history"
           element={
             <RequireAuth role="admin">
-              <ImageTravelHistory />
+              <AdminLayout user={currentUser} onLogout={handleLogout}>
+                <ImageTravelHistory />
+              </AdminLayout>
             </RequireAuth>
           }
         />
