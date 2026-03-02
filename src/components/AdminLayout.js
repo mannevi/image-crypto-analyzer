@@ -7,28 +7,43 @@ import {
 import './AdminLayout.css';
 
 function AdminLayout({ user, onLogout, children }) {
-  const navigate = useNavigate();
-  const location = useLocation();
+  const navigate  = useNavigate();
+  const location  = useLocation();
 
   const handleLogout = () => {
     if (onLogout) onLogout();
     navigate('/login');
   };
 
+  // Tab-based items stay on /admin/dashboard but change ?tab=
+  // Route-based items navigate to a different path
   const navItems = [
-    { path: '/admin/dashboard',          icon: <BarChart3 size={18} />,  label: 'Overview'     },
-    { path: '/admin/dashboard?tab=users',icon: <Users size={18} />,      label: 'Users'        },
-    { path: '/admin/dashboard?tab=assets',icon:<FolderOpen size={18} />, label: 'Assets'       },
-    { path: '/admin/assets',             icon: <Shield size={18} />,     label: 'Track Assets' },
-    { path: '/admin/verify',             icon: <FileSearch size={18} />, label: 'Verify'       },
-    { path: '/admin/dashboard?tab=analytics', icon: <Activity size={18} />, label: 'Analytics' },
-    { path: '/admin/dashboard?tab=settings',  icon: <Settings size={18} />, label: 'Settings'  },
+    { type: 'tab',   tab: 'overview',   path: '/admin/dashboard', icon: <BarChart3 size={18} />,  label: 'Overview'     },
+    { type: 'tab',   tab: 'users',      path: '/admin/dashboard', icon: <Users size={18} />,      label: 'Users'        },
+    { type: 'tab',   tab: 'assets',     path: '/admin/dashboard', icon: <FolderOpen size={18} />, label: 'Assets'       },
+    { type: 'route', tab: null,         path: '/admin/assets',    icon: <Shield size={18} />,     label: 'Track Assets' },
+    { type: 'route', tab: null,         path: '/admin/verify',    icon: <FileSearch size={18} />, label: 'Verify'       },
+    { type: 'tab',   tab: 'analytics',  path: '/admin/dashboard', icon: <Activity size={18} />,   label: 'Analytics'   },
+    { type: 'tab',   tab: 'settings',   path: '/admin/dashboard', icon: <Settings size={18} />,   label: 'Settings'    },
   ];
 
-  const isActive = (path) => {
-    const basePath = path.split('?')[0];
-    return location.pathname === basePath &&
-      (!path.includes('?') || location.search === '?' + path.split('?')[1]);
+  // Get current tab from URL (e.g. ?tab=users) or default to 'overview'
+  const currentTab = new URLSearchParams(location.search).get('tab') || 'overview';
+
+  const isActive = (item) => {
+    if (item.type === 'route') return location.pathname === item.path;
+    // Tab item: must be on /admin/dashboard AND tab matches
+    return location.pathname === '/admin/dashboard' && currentTab === item.tab;
+  };
+
+  const handleClick = (item) => {
+    if (item.type === 'route') {
+      navigate(item.path);
+    } else {
+      // Navigate to /admin/dashboard with ?tab= query param
+      const query = item.tab === 'overview' ? '' : `?tab=${item.tab}`;
+      navigate(`/admin/dashboard${query}`);
+    }
   };
 
   return (
@@ -50,13 +65,13 @@ function AdminLayout({ user, onLogout, children }) {
         {/* Sidebar */}
         <div className="admin-sidebar">
           <ul className="sidebar-menu">
-            {navItems.map(({ path, icon, label }) => (
+            {navItems.map((item) => (
               <li
-                key={path}
-                className={isActive(path) ? 'active' : ''}
-                onClick={() => navigate(path.split('?')[0])}
+                key={item.label}
+                className={isActive(item) ? 'active' : ''}
+                onClick={() => handleClick(item)}
               >
-                {icon} {label}
+                {item.icon} {item.label}
               </li>
             ))}
           </ul>

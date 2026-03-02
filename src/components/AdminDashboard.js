@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Users, BarChart3, Settings, FileSearch, Shield, CheckCircle, AlertTriangle, HardDrive, Activity, FolderOpen, RefreshCw, Eye, UserX, UserCheck } from 'lucide-react';
 
 import { adminAPI } from '../api/client';
 import './AdminDashboard.css';
 
 function AdminDashboard({ user, onLogout }) {
-  const [activeTab,  setActiveTab]  = useState('overview');
+  const [searchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') || 'overview';
   const [stats,      setStats]      = useState({
     total_users: 0, total_assets: 0, total_reports: 0, tampered_found: 0
   });
