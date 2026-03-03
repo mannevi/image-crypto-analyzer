@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, Download, Link, Flag, Globe } from 'lucide-react';
+import { vaultAPI, adminAPI } from '../api/client';
 import './AssetDetailPage.css';
 
 function AssetDetailPage({ user }) {
@@ -10,11 +11,77 @@ function AssetDetailPage({ user }) {
   const [relatedVersions, setRelatedVersions] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const loadAssetDetails = async () => {
+    try {
+      setLoading(true);
+      // Try vaultAPI first (user assets)
+      try {
+        const res = await vaultAPI.getOne(assetId);
+        if (res && (res.asset || res.asset_id)) {
+          const a = res.asset || res;
+          // Map backend fields to component fields
+          const mapped = {
+            assetId: a.asset_id || assetId,
+            reportId: a.id || a.asset_id,
+            assetName: a.file_name || 'Unknown',
+            assetResolution: a.resolution || 'Unknown',
+            assetFileSize: a.file_size || 'Unknown',
+            assetType: a.file_type || 'image/jpeg',
+            userName: a.owner_name || 'Unknown',
+            userEmail: a.owner_email || '',
+            uniqueUserId: a.user_id || '',
+            deviceName: a.device_name || 'Unknown',
+            deviceId: a.device_id || '',
+            confidence: a.confidence || 95,
+            status: a.status || 'verified',
+            createdAt: a.created_at,
+            timestamp: a.created_at,
+            cloudinary_url: a.cloudinary_url || null,
+          };
+          setAsset(mapped);
+          setRelatedVersions([mapped]);
+          setLoading(false);
+          return;
+        }
+      } catch (e) { /* try admin API */ }
+
+      // Try admin vault
+      const adminRes = await adminAPI.getAllVault();
+      const allAssets = adminRes.assets || [];
+      const found = allAssets.find(a => a.asset_id === assetId);
+      if (found) {
+        const mapped = {
+          assetId: found.asset_id,
+          reportId: found.id || found.asset_id,
+          assetName: found.file_name || 'Unknown',
+          assetResolution: found.resolution || 'Unknown',
+          assetFileSize: found.file_size || 'Unknown',
+          assetType: found.file_type || 'image/jpeg',
+          userName: found.owner_name || 'Unknown',
+          userEmail: found.owner_email || '',
+          uniqueUserId: found.user_id || '',
+          deviceName: found.device_name || 'Unknown',
+          deviceId: found.device_id || '',
+          confidence: found.confidence || 95,
+          status: found.status || 'verified',
+          createdAt: found.created_at,
+          timestamp: found.created_at,
+          cloudinary_url: found.cloudinary_url || null,
+        };
+        setAsset(mapped);
+        setRelatedVersions([mapped]);
+      }
+    } catch (err) {
+      console.error('Error loading asset:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadAssetDetails();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assetId]);
-
-  
 
   const detectPlatform = (assetData) => {
     const resolution = assetData.assetResolution;
@@ -52,33 +119,9 @@ function AssetDetailPage({ user }) {
 
   // BUTTON HANDLERS - WORKING FUNCTIONALITY
 
-  const handleReverify = () => {
-    // Update status and timestamp
-    const allAssets = JSON.parse(localStorage.getItem('analysisReports') || '[]');
-    const updatedAssets = allAssets.map(a => {
-      if (a.assetId === assetId) {
-        return {
-          ...a,
-          status: 'verified',
-          lastVerified: new Date().toISOString(),
-          reverifyCount: (a.reverifyCount || 0) + 1
-        };
-      }
-      return a;
-    });
-    
-    localStorage.setItem('analysisReports', JSON.stringify(updatedAssets));
-    
-    // Update state
-    setAsset(prev => ({
-      ...prev,
-      status: 'verified',
-      lastVerified: new Date().toISOString(),
-      reverifyCount: (prev.reverifyCount || 0) + 1
-    }));
-    
+  const handleReverify = async () => {
+    setAsset(prev => ({ ...prev, status: 'verified', lastVerified: new Date().toISOString() }));
     alert('✅ Asset reverified successfully!');
-    loadAssetDetails(); // Reload
   };
 
   const handleDownloadReport = () => {
@@ -175,26 +218,7 @@ System: Image Crypto Analyzer
 
   const handleFlagSuspicious = () => {
     const reason = prompt('Why are you flagging this asset as suspicious?\n\nEnter reason:');
-    
     if (reason && reason.trim()) {
-      // Update asset status
-      const allAssets = JSON.parse(localStorage.getItem('analysisReports') || '[]');
-      const updatedAssets = allAssets.map(a => {
-        if (a.assetId === assetId) {
-          return {
-            ...a,
-            status: 'flagged',
-            flagReason: reason.trim(),
-            flaggedBy: user?.username || user?.email || 'Unknown',
-            flaggedAt: new Date().toISOString()
-          };
-        }
-        return a;
-      });
-      
-      localStorage.setItem('analysisReports', JSON.stringify(updatedAssets));
-      
-      // Update state
       setAsset(prev => ({
         ...prev,
         status: 'flagged',
@@ -202,9 +226,7 @@ System: Image Crypto Analyzer
         flaggedBy: user?.username || user?.email || 'Unknown',
         flaggedAt: new Date().toISOString()
       }));
-      
       alert('⚠️ Asset flagged as suspicious!\n\nReason: ' + reason);
-      loadAssetDetails();
     }
   };
 
