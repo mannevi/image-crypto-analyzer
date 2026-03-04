@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Eye, Download, Filter, Calendar, CheckCircle, XCircle } from 'lucide-react';
+import { adminAPI } from '../api/client';
 import './AssetsPage.css';
 
 function AssetsPage() {
@@ -8,15 +9,45 @@ function AssetsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // Load assets from localStorage
   useEffect(() => {
-    const storedAssets = localStorage.getItem('analysisReports');
-    if (storedAssets) {
-      const parsedAssets = JSON.parse(storedAssets);
-      setAssets(parsedAssets);
-      setFilteredAssets(parsedAssets);
-    }
+    const loadAssets = async () => {
+      try {
+        const res = await adminAPI.getAllVault();
+        const raw = res.assets || [];
+        const mapped = raw.map(a => ({
+          ...a,
+          assetId:        a.asset_id       || a.assetId,
+          reportId:       a.id             || a.asset_id,
+          assetResolution: a.resolution    || a.assetResolution || '—',
+          assetFileSize:  a.file_size      || a.assetFileSize   || '—',
+          uniqueUserId:   a.user_id        || a.uniqueUserId    || null,
+          userName:       a.owner_name     || a.userName        || 'Unknown',
+          userEmail:      a.owner_email    || a.userEmail       || null,
+          deviceId:       a.device_id      || a.deviceId        || null,
+          deviceName:     a.device_name    || a.deviceName      || null,
+          ipAddress:      a.ip_address     || a.ipAddress       || null,
+          confidence:     a.confidence     || 95,
+          status:         a.status         || 'Verified',
+          timestamp:      a.created_at     || a.timestamp,
+          createdAt:      a.created_at     || a.createdAt,
+          platformCopies: a.platform_copies|| a.platformCopies  || 0,
+          authorshipCertificateId: a.certificate_id || a.authorshipCertificateId || null,
+          fileHash:       a.file_hash      || a.fileHash        || null,
+          blockchainAnchor: a.blockchain_anchor || a.blockchainAnchor || null,
+          gpsLocation:    a.gps_location   || a.gpsLocation     || null,
+          detectedCase:   a.status === 'verified' ? 'Case 1: Verified' : 'Case 2: Unknown',
+        }));
+        setAssets(mapped);
+        setFilteredAssets(mapped);
+      } catch (err) {
+        console.error('Failed to load assets:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadAssets();
   }, []);
 
   // Search functionality - searches ALL fields
@@ -64,17 +95,49 @@ function AssetsPage() {
   };
 
   const downloadReport = (asset) => {
-    // Create a downloadable JSON report
-    const reportData = JSON.stringify(asset, null, 2);
-    const blob = new Blob([reportData], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `report-${asset.assetId}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const isVerified = asset.status === 'Verified' || asset.status === 'verified';
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"/><title>Asset Report - ${asset.assetId}</title>
+<style>
+  body{font-family:Arial,sans-serif;margin:40px;color:#1f2937;}
+  h1{font-size:1.5rem;border-bottom:2px solid #6366f1;padding-bottom:8px;}
+  h2{font-size:1rem;color:#6366f1;margin-top:24px;margin-bottom:8px;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;}
+  .item{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;}
+  .label{font-size:0.7rem;font-weight:700;color:#6b7280;margin-bottom:4px;text-transform:uppercase;}
+  .value{font-size:0.9rem;font-weight:500;}
+  .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:0.8rem;font-weight:600;}
+  .verified{background:#d1fae5;color:#065f46;}.unknown{background:#fee2e2;color:#991b1b;}
+  .footer{margin-top:40px;font-size:0.8rem;color:#6b7280;border-top:1px solid #e5e7eb;padding-top:12px;}
+</style></head><body>
+  <h1>Asset Details Report</h1>
+  <h2>Asset Information</h2>
+  <div class="grid">
+    <div class="item"><div class="label">Asset ID</div><div class="value">${asset.assetId||'—'}</div></div>
+    <div class="item"><div class="label">Status</div><div class="value"><span class="badge ${isVerified?'verified':'unknown'}">${isVerified?'✓ Verified':'⊗ Unknown'}</span></div></div>
+    <div class="item"><div class="label">Certificate ID</div><div class="value">${asset.authorshipCertificateId||'Not Present'}</div></div>
+    <div class="item"><div class="label">Device ID</div><div class="value">${asset.deviceId||'—'}</div></div>
+    <div class="item"><div class="label">Device Name</div><div class="value">${asset.deviceName||'—'}</div></div>
+    <div class="item"><div class="label">Confidence</div><div class="value">${asset.confidence}%</div></div>
+  </div>
+  <h2>Creator Information</h2>
+  <div class="grid">
+    <div class="item"><div class="label">Name</div><div class="value">${asset.userName||'—'}</div></div>
+    <div class="item"><div class="label">Email</div><div class="value">${asset.userEmail||'—'}</div></div>
+    <div class="item"><div class="label">User ID</div><div class="value">${asset.uniqueUserId||'—'}</div></div>
+    <div class="item"><div class="label">IP Address</div><div class="value">${asset.ipAddress||'—'}</div></div>
+  </div>
+  <h2>Technical Details</h2>
+  <div class="grid">
+    <div class="item"><div class="label">Resolution</div><div class="value">${asset.assetResolution||'—'}</div></div>
+    <div class="item"><div class="label">File Size</div><div class="value">${asset.assetFileSize||'—'}</div></div>
+    <div class="item"><div class="label">Created</div><div class="value">${asset.createdAt ? new Date(asset.createdAt).toLocaleDateString() : '—'}</div></div>
+    <div class="item"><div class="label">Platform Copies</div><div class="value">${asset.platformCopies||0}</div></div>
+  </div>
+  <div class="footer">Report generated: ${new Date().toLocaleString()} | Image Forensics App</div>
+</body></html>`;
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); w.onload = () => w.print(); }
   };
 
   const formatDate = (timestamp) => {
@@ -107,7 +170,7 @@ function AssetsPage() {
             <span className="stat-label">Total Assets</span>
           </div>
           <div className="stat-box">
-            <span className="stat-number">{assets.filter(a => a.status === 'Verified').length}</span>
+            <span className="stat-number">{assets.filter(a => a.status === 'Verified' || a.status === 'verified').length}</span>
             <span className="stat-label">Verified</span>
           </div>
         </div>

@@ -1812,17 +1812,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
           };
 
           try {
-            const existing = JSON.parse(localStorage.getItem('vaultImages') || '[]');
-            existing.unshift(vaultEntry);
-            localStorage.setItem('vaultImages', JSON.stringify(existing.slice(0, 200)));
-
-            // Notify UserDashboard of the change
-            window.dispatchEvent(new StorageEvent('storage', {
-              key: 'vaultImages',
-              newValue: JSON.stringify(existing.slice(0, 200)),
-              url: window.location.href,
-              storageArea: localStorage
-            }));
+            // Backend API save is handled by saveToVault above
+            console.log('✅ Vault entry prepared for backend');
           } catch (e) {
             console.error('Failed to save to vault:', e);
           }

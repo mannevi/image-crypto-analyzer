@@ -554,7 +554,7 @@ function UserDashboard({ user, onLogout }) {
                       <div className="info-item-enhanced">
                         <label>Last Login</label>
                         <span className="info-value">
-                          {formatDate(localStorage.getItem(`lastLogin_${displayEmail}`) || new Date().toISOString())}
+                          {formatDate(new Date().toISOString())}
                         </span>
                       </div>
                     </div>

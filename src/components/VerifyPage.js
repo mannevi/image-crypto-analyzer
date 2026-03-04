@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Upload, CheckCircle, XCircle, AlertCircle, Image as ImageIcon, Info } from 'lucide-react';
+import { vaultAPI } from '../api/client';
 import './VerifyPage.css';
 
 function VerifyPage() {
@@ -277,7 +278,7 @@ function VerifyPage() {
     e.preventDefault();
   };
 
-  const verifyImage = () => {
+  const verifyImage = async () => {
     if (!selectedFile) {
       alert('Please select an image first');
       return;
@@ -286,7 +287,7 @@ function VerifyPage() {
     setVerifying(true);
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
@@ -295,31 +296,30 @@ function VerifyPage() {
       
       // Try to extract UUID
       const uuidResult = extractUUIDWithRotation(canvas);
-      
-      // Get stored assets
-      // ── Search BOTH vaultImages (new) and analysisReports (legacy) ────────
-      const vaultAssets   = JSON.parse(localStorage.getItem('vaultImages')    || '[]');
-      const reportAssets  = JSON.parse(localStorage.getItem('analysisReports')|| '[]');
 
-      // Normalize every entry to a common shape so the rest of the code works uniformly
-      const normalize = (asset) => ({
-        ...asset,
-        // resolution: vault stores as "W x H" in `resolution`, reports in `assetResolution`
-        assetResolution: asset.assetResolution || asset.resolution || '0 x 0',
-        // file size: vault stores raw bytes in `fileSize`, reports store "X KB" string in `assetFileSize`
-        assetFileSize: asset.assetFileSize
-          || (asset.fileSize ? (asset.fileSize / 1024).toFixed(2) + ' KB' : null),
-        // owner id: vault uses `userId`, reports use `uniqueUserId`
-        uniqueUserId:   asset.uniqueUserId || asset.userId || null,
-        // owner name/email
-        userName:       asset.userName  || asset.ownerName  || null,
-        userEmail:      asset.userEmail || asset.ownerEmail || null,
-      });
-
-      const storedAssets = [
-        ...vaultAssets.map(normalize),
-        ...reportAssets.map(normalize),
-      ];
+      // Fetch assets from backend API
+      let storedAssets = [];
+      try {
+        const res = await vaultAPI.list();
+        const vault = res.assets || [];
+        storedAssets = vault.map(asset => ({
+          ...asset,
+          assetId:        asset.asset_id      || asset.assetId,
+          assetResolution: asset.resolution   || asset.assetResolution || '0 x 0',
+          assetFileSize:  asset.file_size     || asset.assetFileSize   || '0 KB',
+          uniqueUserId:   asset.user_id       || asset.uniqueUserId    || null,
+          userName:       asset.owner_name    || asset.userName        || null,
+          userEmail:      asset.owner_email   || asset.userEmail       || null,
+          deviceId:       asset.device_id     || asset.deviceId        || null,
+          dateEncrypted:  asset.created_at    || asset.dateEncrypted,
+          certificateId:  asset.certificate_id|| asset.certificateId   || null,
+          fileHash:       asset.file_hash     || asset.fileHash        || null,
+          blockchainAnchor: asset.blockchain_anchor || asset.blockchainAnchor || null,
+          gpsLocation:    asset.gps_location  || asset.gpsLocation     || null,
+        }));
+      } catch (err) {
+        console.warn('Could not fetch vault assets:', err.message);
+      }
       
       let matchFound = false;
       let matchedAsset = null;
@@ -327,10 +327,9 @@ function VerifyPage() {
       let changes = [];
       
       if (uuidResult.found) {
-        // UUID found - try to match with stored assets
         matchedAsset = storedAssets.find(asset => 
           (asset.uniqueUserId && asset.uniqueUserId === uuidResult.userId) ||
-          (asset.userId       && asset.userId       === uuidResult.userId) ||
+          (asset.user_id      && asset.user_id      === uuidResult.userId) ||
           (asset.deviceId     && asset.deviceId     === uuidResult.deviceId)
         );
         
@@ -338,21 +337,16 @@ function VerifyPage() {
           matchFound = true;
           confidence = calculateSimilarity(canvas, matchedAsset);
           changes = detectModifications(canvas, matchedAsset, uuidResult.rotation || 0);
-          
-          // Adjust confidence if rotated (already reported in detectModifications)
           if (uuidResult.rotation !== 0) {
             confidence = Math.max(85, confidence - 5);
           }
         }
       } else {
-        // No UUID - try image hash matching
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const uploadedHash = generateImageHash(imageData);
         
-        // Check if any asset has similar characteristics
         for (const asset of storedAssets) {
           const similarity = calculateSimilarity(canvas, asset);
-          
           if (similarity > 70) {
             matchFound = true;
             matchedAsset = asset;
