@@ -167,14 +167,66 @@ function AdminDashboard({ user, onLogout }) {
 
           {selectedUser && (
             <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
-              <div className="modal-content" onClick={e => e.stopPropagation()}>
-                <div className="modal-header"><h2>User Profile</h2><button className="modal-close" onClick={() => setSelectedUser(null)}>×</button></div>
+              <div className="modal-content" style={{maxWidth:'600px', width:'90%'}} onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                  <h2>User Profile</h2>
+                  <button className="modal-close" onClick={() => setSelectedUser(null)}>×</button>
+                </div>
                 <div className="modal-body">
-                  {[['Name',selectedUser.username],['Email',selectedUser.email],['Role',selectedUser.role],
-                    ['Status',selectedUser.is_active?'Active':'Suspended'],['Joined',formatDate(selectedUser.created_at)],['User ID',selectedUser.id]
-                  ].map(([label,value]) => (
-                    <div key={label} className="detail-row"><span className="detail-label">{label}:</span><span className="detail-value">{value}</span></div>
-                  ))}
+                  <h4 style={{marginBottom:'12px', color:'#374151'}}>User Information</h4>
+                  <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'12px', marginBottom:'16px'}}>
+                    {[
+                      ['NAME:', selectedUser.username],
+                      ['EMAIL:', selectedUser.email],
+                      ['PHONE:', selectedUser.phone || 'Not provided'],
+                      ['SIGNUP DATE:', new Date(selectedUser.created_at).toLocaleDateString()],
+                      ['TOTAL PROOFS:', assets.filter(a => a.owner_email === selectedUser.email).length],
+                      ['PLAN:', 'Free'],
+                    ].map(([label, value]) => (
+                      <div key={label} style={{background:'#f9fafb', border:'1px solid #e5e7eb', borderRadius:'8px', padding:'12px'}}>
+                        <div style={{fontSize:'0.7rem', fontWeight:'700', color:'#6b7280', marginBottom:'4px'}}>{label}</div>
+                        <div style={{fontSize:'0.9rem', fontWeight:'500'}}>{label === 'PLAN:' ? <span style={{background:'#e5e7eb', borderRadius:'20px', padding:'2px 10px', fontSize:'0.8rem'}}>{value}</span> : value}</div>
+                      </div>
+                    ))}
+                    <div style={{background:'#f9fafb', border:'1px solid #e5e7eb', borderRadius:'8px', padding:'12px'}}>
+                      <div style={{fontSize:'0.7rem', fontWeight:'700', color:'#6b7280', marginBottom:'4px'}}>STATUS:</div>
+                      <span style={{background: selectedUser.is_active ? '#d1fae5' : '#fee2e2', color: selectedUser.is_active ? '#065f46' : '#991b1b', borderRadius:'20px', padding:'2px 10px', fontSize:'0.8rem', fontWeight:'600'}}>
+                        {selectedUser.is_active ? 'Active' : 'Suspended'}
+                      </span>
+                    </div>
+                    <div style={{background:'#f9fafb', border:'1px solid #e5e7eb', borderRadius:'8px', padding:'12px'}}>
+                      <div style={{fontSize:'0.7rem', fontWeight:'700', color:'#6b7280', marginBottom:'4px'}}>DEVICES:</div>
+                      <div style={{fontSize:'0.9rem'}}>No devices registered</div>
+                    </div>
+                  </div>
+
+                  <h4 style={{marginBottom:'8px', color:'#374151'}}>User Assets ({assets.filter(a => a.owner_email === selectedUser.email).length})</h4>
+                  <div style={{border:'1px solid #e5e7eb', borderRadius:'8px', padding:'12px', minHeight:'80px'}}>
+                    {assets.filter(a => a.owner_email === selectedUser.email).length > 0 ? (
+                      <table className="admin-table" style={{margin:0}}>
+                        <thead><tr><th>Asset ID</th><th>File Name</th><th>Date</th></tr></thead>
+                        <tbody>
+                          {assets.filter(a => a.owner_email === selectedUser.email).map((a,i) => (
+                            <tr key={i}>
+                              <td><code style={{fontSize:'0.75rem'}}>{(a.asset_id||'').slice(0,16)}...</code></td>
+                              <td>{a.file_name||'—'}</td>
+                              <td>{formatDate(a.created_at)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div style={{textAlign:'center', color:'#9ca3af', padding:'20px'}}>No assets created yet</div>
+                    )}
+                  </div>
+                </div>
+                <div style={{padding:'16px 24px', borderTop:'1px solid #e5e7eb', display:'flex', justifyContent:'flex-end', gap:'12px'}}>
+                  <button onClick={() => setSelectedUser(null)} style={{padding:'8px 20px', border:'1px solid #e5e7eb', borderRadius:'6px', background:'white', cursor:'pointer'}}>Close</button>
+                  {selectedUser.is_active ? (
+                    <button onClick={() => { handleSuspend(selectedUser.id); setSelectedUser(null); }} style={{padding:'8px 20px', background:'#ef4444', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'600'}}>Block User</button>
+                  ) : (
+                    <button onClick={() => { handleActivate(selectedUser.id); setSelectedUser(null); }} style={{padding:'8px 20px', background:'#10b981', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'600'}}>Activate User</button>
+                  )}
                 </div>
               </div>
             </div>
