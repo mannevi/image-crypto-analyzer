@@ -162,13 +162,71 @@ function UserDashboard({ user, onLogout }) {
   };
 
   const handleShareCert = (cert) => {
-    const text = `Certificate ID: ${cert.certificate_id}\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}`;
-    if (navigator.share) {
-      navigator.share({ title: 'Ownership Certificate', text });
-    } else {
-      navigator.clipboard.writeText(text).then(() => alert('Copied to clipboard!'));
+  // Save certificate to public storage
+  const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
+  
+  // Check if already shared
+  const existing = sharedCerts.find(c => c.certificate_id === cert.certificate_id);
+  if (!existing) {
+    // Add necessary fields for public view
+    const publicCert = {
+      certificateId: cert.certificate_id,
+      certificate_id: cert.certificate_id,
+      assetId: cert.asset_id,
+      asset_id: cert.asset_id,
+      userId: cert.owner_name || user?.id || 'Unknown',
+      dateCreated: cert.created_at,
+      confidence: cert.confidence,
+      status: cert.status,
+      imagePreview: cert.image_preview,
+      ownershipAtCreation: cert.analysis_data?.ownershipAtCreation || null,
+      technicalDetails: cert.analysis_data?.technicalDetails || null
+    };
+    sharedCerts.push(publicCert);
+    localStorage.setItem('sharedCertificates', JSON.stringify(sharedCerts));
+  }
+
+  // Generate shareable link
+  const shareLink = `${window.location.origin}${process.env.PUBLIC_URL || ''}/certificate/${cert.certificate_id}`;
+
+  // Try native share API first (mobile devices)
+  if (navigator.share) {
+    navigator.share({
+      title: 'Ownership Certificate',
+      text: `View my verified ownership certificate`,
+      url: shareLink
+    }).then(() => {
+      console.log('✅ Shared successfully');
+    }).catch(() => {
+      // Fallback to clipboard
+      copyToClipboard(shareLink);
+    });
+  } else {
+    // Fallback to clipboard (desktop)
+    copyToClipboard(shareLink);
+  }
+};
+
+const copyToClipboard = (link) => {
+  navigator.clipboard.writeText(link).then(() => {
+    alert(`✅ Certificate link copied!\n\n${link}\n\nAnyone can view this certificate by opening the link.`);
+  }).catch(() => {
+    // Manual fallback for older browsers
+    const textArea = document.createElement('textarea');
+    textArea.value = link;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-999999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      alert(`✅ Link copied!\n\n${link}`);
+    } catch (err) {
+      alert(`Share this link:\n\n${link}`);
     }
-  };
+    document.body.removeChild(textArea);
+  });
+};
 
   const handleChangePassword = async () => {
     const newPwd = window.prompt('Enter new password (min 6 characters):');
