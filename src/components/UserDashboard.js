@@ -162,19 +162,27 @@ function UserDashboard({ user, onLogout }) {
   };
 
   const handleShareCert = (cert) => {
+  console.log('Sharing certificate:', cert);
+  
   // Save certificate to public storage
   const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
+  console.log('Existing shared certs:', sharedCerts);
   
   // Check if already shared
-  const existing = sharedCerts.find(c => c.certificate_id === cert.certificate_id);
+  const certId = cert.certificate_id || cert.id;
+  const existing = sharedCerts.find(c => 
+    c.certificate_id === certId || 
+    c.certificateId === certId
+  );
+  
   if (!existing) {
     // Add necessary fields for public view
     const publicCert = {
-      certificateId: cert.certificate_id,
-      certificate_id: cert.certificate_id,
+      certificateId: certId,
+      certificate_id: certId,
       assetId: cert.asset_id,
       asset_id: cert.asset_id,
-      userId: cert.owner_name || user?.id || 'Unknown',
+      userId: cert.owner_name || user?.id || user?.email || 'Unknown',
       dateCreated: cert.created_at,
       confidence: cert.confidence,
       status: cert.status,
@@ -182,12 +190,17 @@ function UserDashboard({ user, onLogout }) {
       ownershipAtCreation: cert.analysis_data?.ownershipAtCreation || null,
       technicalDetails: cert.analysis_data?.technicalDetails || null
     };
+    
     sharedCerts.push(publicCert);
     localStorage.setItem('sharedCertificates', JSON.stringify(sharedCerts));
+    console.log('Certificate saved to localStorage:', publicCert);
+  } else {
+    console.log('Certificate already shared');
   }
 
   // Generate shareable link
-  const shareLink = `${window.location.origin}${process.env.PUBLIC_URL || ''}/certificate/${cert.certificate_id}`;
+  const shareLink = `${window.location.origin}${process.env.PUBLIC_URL || ''}/certificate/${certId}`;
+  console.log('Share link:', shareLink);
 
   // Try native share API first (mobile devices)
   if (navigator.share) {
@@ -197,7 +210,8 @@ function UserDashboard({ user, onLogout }) {
       url: shareLink
     }).then(() => {
       console.log('✅ Shared successfully');
-    }).catch(() => {
+    }).catch((err) => {
+      console.error('Share failed:', err);
       // Fallback to clipboard
       copyToClipboard(shareLink);
     });

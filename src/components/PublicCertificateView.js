@@ -15,24 +15,36 @@ function PublicCertificateView() {
   }, [certificateId]);
 
   const loadCertificate = () => {
-    try {
-      // Load from shared certificates (public storage)
-      const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
-      const cert = sharedCerts.find(c => c.certificateId === certificateId);
+  try {
+    console.log('Loading certificate:', certificateId);
+    
+    // Load from shared certificates (public storage)
+    const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
+    console.log('Shared certificates:', sharedCerts);
+    
+    // Try multiple ID formats
+    const cert = sharedCerts.find(c => 
+      c.certificateId === certificateId || 
+      c.certificate_id === certificateId ||
+      c.id === certificateId
+    );
+    
+    console.log('Found certificate:', cert);
 
-      if (!cert) {
-        setError('Certificate not found or link has expired');
-        setLoading(false);
-        return;
-      }
-
-      setCertificate(cert);
+    if (!cert) {
+      setError('Certificate not found or link has expired');
       setLoading(false);
-    } catch (err) {
-      setError('Error loading certificate');
-      setLoading(false);
+      return;
     }
-  };
+
+    setCertificate(cert);
+    setLoading(false);
+  } catch (err) {
+    console.error('Error loading certificate:', err);
+    setError('Error loading certificate: ' + err.message);
+    setLoading(false);
+  }
+};
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
