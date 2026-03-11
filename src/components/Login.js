@@ -1,13 +1,77 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import './Login.css';
 
+// Biometric plugin — works on mobile only, silently fails on web
+let FingerprintAIO = null;
+try {
+  const { Plugins } = require('@capacitor/core');
+  FingerprintAIO = Plugins.FingerprintAIO;
+} catch (e) {
+  // Not available on web — that's fine
+}
+
 function Login({ onLogin }) {
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [formData, setFormData] = useState({ email: '', username: '', password: '' });
-  const [error,   setError]   = useState('');
-  const [loading, setLoading] = useState(false);
+  const [isAdmin,            setIsAdmin]            = useState(false);
+  const [formData,           setFormData]           = useState({ email: '', username: '', password: '' });
+  const [error,              setError]              = useState('');
+  const [loading,            setLoading]            = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const navigate = useNavigate();
+
+  // Check biometric availability when app loads
+  useEffect(() => {
+    checkBiometric();
+  }, []);
+
+  const checkBiometric = async () => {
+    if (!FingerprintAIO) return;
+    try {
+      await FingerprintAIO.isAvailable();
+      setBiometricAvailable(true);
+
+      // Auto-trigger biometric if user was previously logged in
+      const savedToken = localStorage.getItem('savedToken');
+      const savedUser  = localStorage.getItem('savedUser');
+      if (savedToken && savedUser) {
+        handleBiometricLogin();
+      }
+    } catch (e) {
+      setBiometricAvailable(false);
+    }
+  };
+
+  const handleBiometricLogin = async () => {
+    if (!FingerprintAIO) return;
+    try {
+      // Step 1 — Authenticate with device biometric
+      await FingerprintAIO.show({
+        title              : 'PINIT Login',
+        subtitle           : 'Verify your identity',
+        description        : 'Use fingerprint or face unlock',
+        fallbackButtonTitle: 'Use Password',
+        disableBackup      : false
+      });
+
+      // Step 2 — Biometric passed, get saved credentials
+      const savedToken = localStorage.getItem('savedToken');
+      const savedUser  = JSON.parse(localStorage.getItem('savedUser') || '{}');
+
+      if (!savedToken || !savedUser.id) {
+        setError('No saved account found. Please login with password first.');
+        return;
+      }
+
+      // Step 3 — Store UUID and login
+      localStorage.setItem('userUUID', savedUser.id);
+      onLogin(savedUser, savedToken);
+      navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
+
+    } catch (e) {
+      // Biometric failed or cancelled — let user use password
+      setError('Biometric failed. Please use your password.');
+    }
+  };
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -37,9 +101,12 @@ function Login({ onLogin }) {
         return;
       }
 
-      // Save last login time
+      // Save for biometric login next time
+      localStorage.setItem('savedToken', data.access_token);
+      localStorage.setItem('savedUser',  JSON.stringify(data.user));
+      localStorage.setItem('userUUID',   data.user.id);
       localStorage.setItem(`lastLogin_${data.user.email}`, new Date().toISOString());
-        localStorage.setItem('userUUID', data.user.id);
+
       onLogin(data.user, data.access_token);
       navigate(data.user.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
 
@@ -72,6 +139,31 @@ function Login({ onLogin }) {
             Admin Login
           </button>
         </div>
+
+        {/* Biometric button — only shows on mobile if fingerprint/face available */}
+        {biometricAvailable && !isAdmin && (
+          <button
+            onClick={handleBiometricLogin}
+            style={{
+              width         : '100%',
+              padding       : '12px',
+              marginBottom  : '16px',
+              background    : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+              color         : 'white',
+              border        : 'none',
+              borderRadius  : '8px',
+              fontSize      : '16px',
+              fontWeight    : '600',
+              cursor        : 'pointer',
+              display       : 'flex',
+              alignItems    : 'center',
+              justifyContent: 'center',
+              gap           : '8px'
+            }}
+          >
+            👆 Login with Fingerprint / Face
+          </button>
+        )}
 
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="error-message">{error}</div>}
