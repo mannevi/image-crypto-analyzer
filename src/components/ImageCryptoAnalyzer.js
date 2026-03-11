@@ -1817,7 +1817,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       );
       ctx.putImageData(encryptedData, 0, 0);
 
-      canvas.toBlob((blob) => {
+canvas.toBlob((blob) => {
         const encryptedUrl = URL.createObjectURL(blob);
         setEncryptedImage(encryptedUrl);
         setProcessing(false);
@@ -1830,7 +1830,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
         const filename = `${assetId}_${ts}.png`;
         setEncryptedFileName(filename);
 
-// ── Compute vault security data ─────────────────────────────────────
+        // ── Compute vault security data ─────────────────────────────────────
         const perceptualHash = computePerceptualHash(canvas);
         const blockchainAnchor = generateBlockchainAnchor(sha256Hash, now.getTime());
         const certId = generateAuthorshipCertificateId(userId, deviceInfo.deviceId);
@@ -1840,34 +1840,42 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
         reader.onloadend = () => {
           const thumbnail = reader.result;
           
-// ACTUALLY save to backend vault API
+          // ACTUALLY save to backend vault API
           import('../api/client').then(({ vaultAPI }) => {
-            vaultAPI.save({
+            const vaultPayload = {
               asset_id:           assetId,
               owner_name:         userId,
               file_name:          filename,
               file_size:          `${(blob.size / 1024).toFixed(2)} KB`,
               thumbnail_base64:   thumbnail,
-              device_id:          deviceInfo.deviceId,
+              device_id:          deviceInfo.deviceId || 'UNKNOWN',
               certificate_id:     certId,
               owner_email:        user?.email || null,
-              file_hash:          sha256Hash,
-              visual_fingerprint: perceptualHash,
-              blockchain_anchor:  blockchainAnchor,
+              file_hash:          sha256Hash || null,
+              visual_fingerprint: perceptualHash || null,
+              blockchain_anchor:  blockchainAnchor || null,
               resolution:         `${canvas.width}x${canvas.height}`,
-              capture_timestamp:  captureTimeData.timestamp || new Date().toISOString(),
-            }).then(() => {
+              capture_timestamp:  captureTimeData.timestamp ? new Date(captureTimeData.timestamp).toISOString() : new Date().toISOString(),
+            };
+            
+            console.log('🔵 Sending to vault:', vaultPayload);
+            
+            vaultAPI.save(vaultPayload).then((response) => {
               console.log('✅ ENCRYPTED IMAGE saved to vault:', assetId);
+              console.log('✅ Backend response:', response);
             }).catch(err => {
               console.error('❌ Vault save failed:', err);
-              console.error('❌ Full error:', err.message, err.response);
+              console.error('❌ Error message:', err.message);
+              console.error('❌ Error response:', err.response?.data);
+              console.error('❌ Status code:', err.response?.status);
+              // Don't block the encryption - just log the error
             });
           }).catch(err => {
             console.error('❌ API import failed:', err);
-            console.error('❌ Cannot load vaultAPI module');
           });
+        reader.readAsDataURL(blob);
 
-        // ── [UPDATED] Update forensicsStats via new helper ──────────────────
+        // ── Update forensicsStats via helper ────────────────────────────────
         updateForensicsStats('encrypted', {
           userId: userId,
           fileName: selectedFile ? selectedFile.name : filename
@@ -1886,6 +1894,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     };
     img.src = preview;
   };
+
+        
 
   // Rotate canvas by specified degrees (90, 180, 270)
   const rotateCanvas = (sourceCanvas, degrees) => {
