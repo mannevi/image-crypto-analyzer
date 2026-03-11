@@ -2,15 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import './Login.css';
 
-// Biometric plugin — works on mobile only, silently fails on web
-let FingerprintAIO = null;
-try {
-  const { Plugins } = require('@capacitor/core');
-  FingerprintAIO = Plugins.FingerprintAIO;
-} catch (e) {
-  // Not available on web — that's fine
-}
-
 function Login({ onLogin }) {
   const [isAdmin,            setIsAdmin]            = useState(false);
   const [formData,           setFormData]           = useState({ email: '', username: '', password: '' });
@@ -19,32 +10,40 @@ function Login({ onLogin }) {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const navigate = useNavigate();
 
-  // Check biometric availability when app loads
   useEffect(() => {
     checkBiometric();
   }, []);
 
+  const getBiometricPlugin = async () => {
+    try {
+      const mod = await import('@capacitor-community/fingerprint-auth');
+      return mod.FingerprintAIO;
+    } catch (e) {
+      return null;
+    }
+  };
+
   const checkBiometric = async () => {
+    const FingerprintAIO = await getBiometricPlugin();
     if (!FingerprintAIO) return;
+
     try {
       await FingerprintAIO.isAvailable();
       setBiometricAvailable(true);
 
-      // Auto-trigger biometric if user was previously logged in
+      // Auto-trigger if user was previously logged in
       const savedToken = localStorage.getItem('savedToken');
       const savedUser  = localStorage.getItem('savedUser');
       if (savedToken && savedUser) {
-        handleBiometricLogin();
+        triggerBiometric(FingerprintAIO);
       }
     } catch (e) {
       setBiometricAvailable(false);
     }
   };
 
-  const handleBiometricLogin = async () => {
-    if (!FingerprintAIO) return;
+  const triggerBiometric = async (FingerprintAIO) => {
     try {
-      // Step 1 — Authenticate with device biometric
       await FingerprintAIO.show({
         title              : 'PINIT Login',
         subtitle           : 'Verify your identity',
@@ -53,24 +52,27 @@ function Login({ onLogin }) {
         disableBackup      : false
       });
 
-      // Step 2 — Biometric passed, get saved credentials
       const savedToken = localStorage.getItem('savedToken');
       const savedUser  = JSON.parse(localStorage.getItem('savedUser') || '{}');
 
       if (!savedToken || !savedUser.id) {
-        setError('No saved account found. Please login with password first.');
+        setError('No saved account. Please login with password first.');
         return;
       }
 
-      // Step 3 — Store UUID and login
       localStorage.setItem('userUUID', savedUser.id);
       onLogin(savedUser, savedToken);
       navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
 
     } catch (e) {
-      // Biometric failed or cancelled — let user use password
       setError('Biometric failed. Please use your password.');
     }
+  };
+
+  const handleBiometricLogin = async () => {
+    const FingerprintAIO = await getBiometricPlugin();
+    if (!FingerprintAIO) return;
+    triggerBiometric(FingerprintAIO);
   };
 
   const handleChange = (e) => {
@@ -101,7 +103,7 @@ function Login({ onLogin }) {
         return;
       }
 
-      // Save for biometric login next time
+      // Save for future biometric login
       localStorage.setItem('savedToken', data.access_token);
       localStorage.setItem('savedUser',  JSON.stringify(data.user));
       localStorage.setItem('userUUID',   data.user.id);
@@ -140,7 +142,7 @@ function Login({ onLogin }) {
           </button>
         </div>
 
-        {/* Biometric button — only shows on mobile if fingerprint/face available */}
+        {/* Biometric button — only visible on mobile with biometric enrolled */}
         {biometricAvailable && !isAdmin && (
           <button
             onClick={handleBiometricLogin}
