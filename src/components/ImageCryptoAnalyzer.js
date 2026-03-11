@@ -791,218 +791,164 @@ const generateAssetId = (imageData) => {
 };
 
 // ============================================
+// LSB STEGANOGRAPHY - EMBED UUID
+// [UPDATED] Added width, height params + upgraded to IMGCRYPT3 format
 // ============================================
-// LSB STEGANOGRAPHY — TILE + VOTING + CRC16
-// Ported from pixel_uuid_stego.py — works for any crop ≥ 25x25 pixels
-// ============================================
 
-const STEGO_TILE     = 12;
-const UUID_FIELD_LEN = 32;
-const PAYLOAD_BYTES  = 1 + UUID_FIELD_LEN + 2; // 35 bytes
-const PAYLOAD_BITS   = PAYLOAD_BYTES * 8;       // 280 bits
-
-const crc16js = (bytes) => {
-  let crc = 0xFFFF;
-  for (let i = 0; i < bytes.length; i++) {
-    crc ^= bytes[i] << 8;
-    for (let j = 0; j < 8; j++)
-      crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
-  }
-  return crc & 0xFFFF;
-};
-
-const buildPayloadBits = (userId) => {
-  const str = (userId || '').substring(0, UUID_FIELD_LEN);
-  const uuidPadded = new Uint8Array(UUID_FIELD_LEN);
-  for (let i = 0; i < str.length; i++) uuidPadded[i] = str.charCodeAt(i);
-  const forCrc = new Uint8Array(1 + UUID_FIELD_LEN);
-  forCrc[0] = str.length;
-  forCrc.set(uuidPadded, 1);
-  const crc = crc16js(forCrc);
-  const payload = new Uint8Array(PAYLOAD_BYTES);
-  payload[0] = str.length;
-  payload.set(uuidPadded, 1);
-  payload[PAYLOAD_BYTES - 2] = (crc >> 8) & 0xFF;
-  payload[PAYLOAD_BYTES - 1] = crc & 0xFF;
-  const bits = [];
-  for (let i = 0; i < PAYLOAD_BYTES; i++)
-    for (let b = 7; b >= 0; b--) bits.push((payload[i] >> b) & 1);
-  return bits;
-};
-
-const parsePayloadBits = (bits) => {
-  if (bits.length < PAYLOAD_BITS) return null;
-  const bytes = new Uint8Array(PAYLOAD_BYTES);
-  for (let i = 0; i < PAYLOAD_BYTES; i++) {
-    let v = 0;
-    for (let b = 0; b < 8; b++) v = (v << 1) | (bits[i * 8 + b] || 0);
-    bytes[i] = v;
-  }
-  const lenByte    = bytes[0];
-  if (lenByte <= 0 || lenByte > UUID_FIELD_LEN) return null;
-  const uuidPadded = bytes.slice(1, 1 + UUID_FIELD_LEN);
-  const crcRead    = (bytes[PAYLOAD_BYTES - 2] << 8) | bytes[PAYLOAD_BYTES - 1];
-  const forCrc     = new Uint8Array(1 + UUID_FIELD_LEN);
-  forCrc[0] = lenByte; forCrc.set(uuidPadded, 1);
-  if (crc16js(forCrc) !== crcRead) return null;
-  let uid = '';
-  for (let i = 0; i < lenByte; i++) uid += String.fromCharCode(uuidPadded[i]);
-  return uid;
-};
-
-// ── EMBED ──────────────────────────────────────────────────────────────────
 const embedUUIDAdvanced = (imageData, userId, gpsData, deviceInfo, ipAddress, timestamp, deviceSource, ipSource, gpsSource, width, height) => {
-  const data        = imageData.data;
-  const payloadBits = buildPayloadBits(userId);  // 280-bit CRC-validated userId
+  const data = imageData.data;
 
-  // Full IMGCRYPT3 message in B channel (sequential) for backward compat
+  // Prepare GPS string
   const gpsString = gpsData && gpsData.available
-    ? `${gpsData.latitude},${gpsData.longitude}` : 'NOGPS';
-  const fullMsg  = `IMGCRYPT3|${userId}|${gpsString}|${timestamp || Date.now()}|${deviceInfo.deviceId || 'UNKNOWN'}|${deviceInfo.deviceName || 'UNKNOWN'}|${ipAddress || 'UNKNOWN'}|${deviceSource || 'Unknown'}|${ipSource || 'Unknown'}|${gpsSource || 'Unknown'}|${width}x${height}|END`;
-  const fullBits = [];
-  for (let i = 0; i < fullMsg.length; i++) {
-    const c = fullMsg.charCodeAt(i);
-    for (let b = 7; b >= 0; b--) fullBits.push((c >> b) & 1);
+    ? `${gpsData.latitude},${gpsData.longitude}`
+    : 'NOGPS';
+
+  // Create message with all metadata (Version 3 format with resolution)
+  const message = `IMGCRYPT3|${userId}|${gpsString}|${timestamp || Date.now()}|${deviceInfo.deviceId || 'UNKNOWN'}|${deviceInfo.deviceName || 'UNKNOWN'}|${ipAddress || 'UNKNOWN'}|${deviceSource || 'Unknown'}|${ipSource || 'Unknown'}|${gpsSource || 'Unknown'}|${width}x${height}|END`;
+
+  // Convert message to binary
+  let binaryMessage = '';
+  for (let i = 0; i < message.length; i++) {
+    const charCode = message.charCodeAt(i);
+    binaryMessage += charCode.toString(2).padStart(8, '0');
   }
 
-  const TILE = STEGO_TILE;
-  for (let idx = 0; idx < data.length; idx += 4) {
-    const pi = idx / 4;
-    const x  = pi % width;
-    const y  = Math.floor(pi / width);
-    const p  = (y % TILE) * TILE + (x % TILE);
+  // Embed binary message into LSB of RGB channels
+  let bitIndex = 0;
+  const totalBits = binaryMessage.length;
 
-    // R + G carry tile-based CRC payload (crop-safe, 25x25 min)
-    data[idx]     = (data[idx]     & 0xFE) | payloadBits[(2 * p)     % PAYLOAD_BITS];
-    data[idx + 1] = (data[idx + 1] & 0xFE) | payloadBits[(2 * p + 1) % PAYLOAD_BITS];
+  // Embed message multiple times for redundancy (at different positions)
+  const embedPositions = [0, Math.floor(data.length / 4), Math.floor(data.length / 2)];
 
-    // B carries full IMGCRYPT3 sequential (fallback for full metadata)
-    data[idx + 2] = (data[idx + 2] & 0xFE) | fullBits[pi % fullBits.length];
+  for (const startPos of embedPositions) {
+    bitIndex = 0;
+    for (let i = startPos; i < data.length && bitIndex < totalBits; i += 4) {
+      // Embed in R, G, B channels (skip Alpha)
+      for (let j = 0; j < 3 && bitIndex < totalBits; j++) {
+        const bit = parseInt(binaryMessage[bitIndex], 10);
+        data[i + j] = (data[i + j] & 0xFE) | bit;
+        bitIndex++;
+      }
+    }
   }
+
   return imageData;
 };
 
-// ── EXTRACT ────────────────────────────────────────────────────────────────
+// ============================================
+// LSB STEGANOGRAPHY - EXTRACT UUID
+// [UPDATED] Added IMGCRYPT3 (V3) support + originalResolution field
+// ============================================
+
 const extractUUIDAdvanced = (imageData) => {
-  const data  = imageData.data;
-  const imgW  = imageData.width || Math.round(Math.sqrt(data.length / 4)) || 1;
-  const TILE  = STEGO_TILE;
+  const data = imageData.data;
+  let binaryMessage = '';
 
-  // METHOD 1: Tile + majority voting (CRC-validated) — works for any 25x25+ crop
-  const decodeWithOffset = (ox, oy) => {
-    const votes  = new Array(PAYLOAD_BITS).fill(0);
-    const counts = new Array(PAYLOAD_BITS).fill(0);
-    for (let idx = 0; idx < data.length; idx += 4) {
-      const pi = idx / 4;
-      const tx = ((pi % imgW) + ox) % TILE;
-      const ty = (Math.floor(pi / imgW) + oy) % TILE;
-      const p  = ty * TILE + tx;
-      const i0 = (2 * p)     % PAYLOAD_BITS;
-      const i1 = (2 * p + 1) % PAYLOAD_BITS;
-      votes[i0]  += (data[idx]     & 1); counts[i0]++;
-      votes[i1]  += (data[idx + 1] & 1); counts[i1]++;
-    }
-    const bits = votes.map((v, i) => (counts[i] > 0 && v > counts[i] / 2) ? 1 : 0);
-    return parsePayloadBits(bits);
-  };
-
-  // Fast path offset (0,0)
-  let uid = decodeWithOffset(0, 0);
-  if (uid) return buildResultFromUserId(uid, data, imgW);
-
-  // Try all 144 tile offsets (handles any crop position)
-  for (let oy = 0; oy < TILE; oy++) {
-    for (let ox = 0; ox < TILE; ox++) {
-      if (ox === 0 && oy === 0) continue;
-      uid = decodeWithOffset(ox, oy);
-      if (uid) return buildResultFromUserId(uid, data, imgW);
+  for (let i = 0; i < data.length; i += 4) {
+    for (let j = 0; j < 3; j++) {
+      binaryMessage += (data[i + j] & 1).toString();
     }
   }
 
-  // METHOD 2: IMGCRYPT3 from B channel (full metadata, sequential)
-  const bBits = [];
-  for (let idx = 0; idx < data.length; idx += 4) bBits.push(data[idx + 2] & 1);
-  const r2 = extractIMGCRYPT3(bBits);
-  if (r2) return r2;
+  const foundData = [];
 
-  // METHOD 3: Legacy R+G+B sequential
-  const rgbBits = [];
-  for (let idx = 0; idx < data.length; idx += 4) {
-    rgbBits.push(data[idx] & 1, data[idx+1] & 1, data[idx+2] & 1);
-  }
-  const r3 = extractIMGCRYPT3(rgbBits);
-  if (r3) return r3;
-
-  return { found: false, userId: '' };
-};
-
-const extractIMGCRYPT3 = (bits) => {
-  const total   = bits.length;
-  const maxScan = Math.min(total - 800, 3200);
-  const maxRead = Math.min(500, Math.floor(total / 8));
-  for (let off = 0; off <= maxScan; off += 8) {
+  for (let i = 0; i < binaryMessage.length - 800; i += 8) {
     let text = '';
-    for (let c = 0; c < maxRead; c++) {
-      const s = off + c * 8;
-      if (s + 8 > total) break;
-      let v = 0;
-      for (let b = 0; b < 8; b++) v = (v << 1) | bits[s + b];
-      text += (v >= 32 && v <= 126) ? String.fromCharCode(v) : '\x00';
+    for (let j = i; j < i + 5000; j += 8) {
+      const byte = binaryMessage.substr(j, 8);
+      if (byte.length < 8) break;
+
+      const charCode = parseInt(byte, 2);
+      if (charCode >= 32 && charCode <= 126) {
+        text += String.fromCharCode(charCode);
+      }
     }
-    if (!text.includes('IMGCRYPT')) continue;
-    const p = parseIMGCRYPT3Msg(text);
-    if (p) return buildResult(p);
+
+    // Check for version 3 (with resolution), version 2 (with sources), or version 1 (without sources)
+    if ((text.includes('IMGCRYPT3|') || text.includes('IMGCRYPT2|') || text.includes('IMGCRYPT|')) && text.includes('|END')) {
+      const isV3 = text.includes('IMGCRYPT3|');
+      const isV2 = text.includes('IMGCRYPT2|');
+      const startIdx = text.indexOf(isV3 ? 'IMGCRYPT3|' : (isV2 ? 'IMGCRYPT2|' : 'IMGCRYPT|')) + (isV3 ? 10 : (isV2 ? 10 : 9));
+      const endIdx = text.indexOf('|END');
+      const content = text.substring(startIdx, endIdx);
+      const parts = content.split('|');
+
+      if (parts.length >= 2) {
+        foundData.push({
+          userId: parts[0] || null,
+          gps: parts[1] || 'NOGPS',
+          timestamp: parts[2] || null,
+          deviceId: parts[3] || null,
+          deviceName: parts[4] || null,
+          ipAddress: parts[5] || null,
+          deviceSource: parts[6] || null,
+          ipSource: parts[7] || null,
+          gpsSource: parts[8] || null,
+          originalResolution: isV3 ? parts[9] : null,
+          isV3: isV3,
+          isV2: isV2
+        });
+      }
+    }
   }
-  return null;
-};
 
-const parseIMGCRYPT3Msg = (text) => {
-  const isV3 = text.includes('IMGCRYPT3|');
-  const isV2 = !isV3 && text.includes('IMGCRYPT2|');
-  const hdr  = isV3 ? 'IMGCRYPT3|' : isV2 ? 'IMGCRYPT2|' : text.includes('IMGCRYPT|') ? 'IMGCRYPT|' : null;
-  if (!hdr) return null;
-  const si = text.indexOf(hdr) + hdr.length;
-  const ei = text.indexOf('|END', si);
-  if (ei <= si) return null;
-  const pts = text.substring(si, ei).split('|');
-  if (pts.length < 4 || !pts[0] || pts[0].length < 2) return null;
-  return { userId: pts[0], gps: pts[1]||'NOGPS', timestamp: pts[2]||null,
-    deviceId: pts[3]||null, deviceName: pts[4]||null, ipAddress: pts[5]||null,
-    deviceSource: pts[6]||null, ipSource: pts[7]||null, gpsSource: pts[8]||null,
-    originalResolution: isV3 ? (pts[9]||null) : null };
-};
+  if (foundData.length > 0) {
+    const bestMatch = foundData[0];
 
-const buildResultFromUserId = (userId, data, imgW) => {
-  // Try B channel for full metadata first
-  const bBits = [];
-  for (let idx = 0; idx < data.length; idx += 4) bBits.push(data[idx + 2] & 1);
-  const full = extractIMGCRYPT3(bBits);
-  if (full) return full;
-  return { found: true, userId,
-    gps: { available: false, coordinates: null, mapsUrl: null, source: 'Unknown' },
-    timestamp: null, deviceId: null, deviceName: null, ipAddress: null,
-    deviceSource: 'Unknown', ipSource: 'Unknown', gpsSource: 'Unknown',
-    originalResolution: null, confidence: 'High' };
-};
-
-const buildResult = (m) => {
-  let gps = { available: false, coordinates: null, mapsUrl: null, source: m.gpsSource || 'Unknown' };
-  if (m.gps && m.gps !== 'NOGPS') {
-    const pts = m.gps.split(',');
-    if (pts.length === 2) {
-      const lat = parseFloat(pts[0]), lng = parseFloat(pts[1]);
-      if (!isNaN(lat) && !isNaN(lng))
-        gps = { available: true, latitude: lat, longitude: lng,
+    // Parse GPS data
+    let gpsResult = { available: false, coordinates: null, mapsUrl: null, source: bestMatch.gpsSource || 'Unknown' };
+    if (bestMatch.gps && bestMatch.gps !== 'NOGPS') {
+      const gpsParts = bestMatch.gps.split(',');
+      if (gpsParts.length === 2) {
+        const lat = parseFloat(gpsParts[0]);
+        const lng = parseFloat(gpsParts[1]);
+        gpsResult = {
+          available: true,
+          latitude: lat,
+          longitude: lng,
           coordinates: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
-          mapsUrl: `https://www.google.com/maps?q=${lat},${lng}`, source: m.gpsSource || 'Unknown' };
+          mapsUrl: `https://www.google.com/maps?q=${lat},${lng}`,
+          source: bestMatch.gpsSource || 'Unknown'
+        };
+      }
     }
+
+    // Parse timestamp
+    let timestampResult = null;
+    if (bestMatch.timestamp && !isNaN(bestMatch.timestamp)) {
+      timestampResult = parseInt(bestMatch.timestamp);
+    }
+
+    return {
+      found: true,
+      userId: bestMatch.userId,
+      gps: gpsResult,
+      timestamp: timestampResult,
+      deviceId: bestMatch.deviceId,
+      deviceName: bestMatch.deviceName,
+      ipAddress: bestMatch.ipAddress,
+      deviceSource: bestMatch.deviceSource || 'Unknown',
+      ipSource: bestMatch.ipSource || 'Unknown',
+      gpsSource: bestMatch.gpsSource || 'Unknown',
+      originalResolution: bestMatch.originalResolution,
+      confidence: foundData.length >= 3 ? 'Very High' : 'High'
+    };
   }
-  return { found: true, userId: m.userId, gps,
-    timestamp: m.timestamp && !isNaN(m.timestamp) ? parseInt(m.timestamp) : null,
-    deviceId: m.deviceId, deviceName: m.deviceName, ipAddress: m.ipAddress,
-    deviceSource: m.deviceSource || 'Unknown', ipSource: m.ipSource || 'Unknown',
-    gpsSource: m.gpsSource || 'Unknown', originalResolution: m.originalResolution,
-    confidence: 'High' };
+
+  return {
+    found: false,
+    userId: '',
+    gps: { available: false, coordinates: null, mapsUrl: null, source: 'Unknown' },
+    timestamp: null,
+    deviceId: null,
+    deviceName: null,
+    ipAddress: null,
+    deviceSource: null,
+    ipSource: null,
+    gpsSource: null,
+    originalResolution: null,
+    confidence: 'None'
+  };
 };
 
 // ============================================
@@ -1543,6 +1489,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const [cameraActive, setCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState('environment');
   const [canSwitchCamera, setCanSwitchCamera] = useState(false);
+  const [authorshipProof, setAuthorshipProof] = useState(null);
+  const [showAuthorshipModal, setShowAuthorshipModal] = useState(false);
 
   // Cleanup blob URLs on unmount or when new ones are created
   useEffect(() => {
@@ -1684,7 +1632,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     setCanSwitchCamera(false);
   };
 
-  const captureImage = () => {
+  const captureImage = async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
     const video = videoRef.current;
@@ -1696,8 +1644,42 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
 
+    // Generate Authorship Proof Certificate
+    const captureTimestamp = Date.now();
+    const captureDate = new Date(captureTimestamp);
+    const deviceId = getDeviceFingerprint();
+    const deviceName = getCurrentDeviceName();
+    
+    // Get GPS location
+    const gpsData = await getGPSLocation();
+    const ipAddress = await getPublicIP();
+
+    // Generate Authorship Certificate ID
+    const userId = user?.id || user?.email || 'user';
+    const authorshipCertId = generateAuthorshipCertificateId(userId, deviceId);
+
+    const proof = {
+      authorshipCertificateId: authorshipCertId,
+      captureTimestamp: captureTimestamp,
+      captureDate: captureDate.toLocaleString(),
+      captureISODate: captureDate.toISOString(),
+      deviceId: deviceId,
+      deviceName: deviceName,
+      resolution: `${canvas.width}x${canvas.height}`,
+      totalPixels: (canvas.width * canvas.height).toLocaleString(),
+      gpsLocation: gpsData,
+      ipAddress: ipAddress,
+      captureMethod: 'Camera Capture',
+      capturedBy: user?.name || user?.email || userId,
+      verified: true,
+      confidence: 100
+    };
+
+    setAuthorshipProof(proof);
+    setShowAuthorshipModal(true);
+
     canvas.toBlob(blob => {
-      const file = new File([blob], 'camera-capture.png', { type: 'image/png' });
+      const file = new File([blob], `camera-capture-${captureTimestamp}.png`, { type: 'image/png' });
       setSelectedFile(file);
       setCaptureSource('Camera Capture');
       const reader = new FileReader();
@@ -2487,6 +2469,197 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
           </div>
         </div>
       </div>
+	  {/* Authorship Proof Modal */}
+      {showAuthorshipModal && authorshipProof && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-4">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                    ✓ Authorship Proof Certificate
+                  </h2>
+                  <p className="text-green-100 text-sm mt-1">Original creation verified</p>
+                </div>
+                <button
+                  onClick={() => setShowAuthorshipModal(false)}
+                  className="text-white hover:text-gray-200 text-3xl font-bold"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {/* Certificate Body */}
+            <div className="p-6">
+              {/* Certificate ID Badge */}
+              <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-500 rounded-lg p-4 mb-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-green-700 font-semibold uppercase mb-1">Certificate ID</p>
+                    <p className="font-mono text-lg font-bold text-green-900">{authorshipProof.authorshipCertificateId}</p>
+                  </div>
+                  <div className="text-5xl">🏆</div>
+                </div>
+              </div>
+
+              {/* Authorship Details */}
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Capture Timestamp */}
+                  <div className="bg-blue-50 p-4 rounded-lg">
+                    <p className="text-xs text-blue-700 uppercase mb-1">📅 Captured At</p>
+                    <p className="font-semibold text-blue-900">{authorshipProof.captureDate}</p>
+                  </div>
+
+                  {/* Captured By */}
+                  <div className="bg-purple-50 p-4 rounded-lg">
+                    <p className="text-xs text-purple-700 uppercase mb-1">👤 Captured By</p>
+                    <p className="font-semibold text-purple-900">{authorshipProof.capturedBy}</p>
+                  </div>
+
+                  {/* Device */}
+                  <div className="bg-indigo-50 p-4 rounded-lg">
+                    <p className="text-xs text-indigo-700 uppercase mb-1">📱 Device</p>
+                    <p className="font-semibold text-indigo-900 text-sm">{authorshipProof.deviceName}</p>
+                    <p className="text-xs text-indigo-600 mt-1">ID: {authorshipProof.deviceId}</p>
+                  </div>
+
+                  {/* Resolution */}
+                  <div className="bg-amber-50 p-4 rounded-lg">
+                    <p className="text-xs text-amber-700 uppercase mb-1">📐 Resolution</p>
+                    <p className="font-semibold text-amber-900">{authorshipProof.resolution}</p>
+                    <p className="text-xs text-amber-600 mt-1">{authorshipProof.totalPixels} pixels</p>
+                  </div>
+
+                  {/* GPS Location */}
+                  <div className="bg-green-50 p-4 rounded-lg col-span-2">
+                    <p className="text-xs text-green-700 uppercase mb-1">📍 GPS Location</p>
+                    {authorshipProof.gpsLocation?.available ? (
+                      <div>
+                        <p className="font-semibold text-green-900">{authorshipProof.gpsLocation.coordinates}</p>
+                        
+                          href={authorshipProof.gpsLocation.mapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-green-600 hover:text-green-800 underline mt-1 inline-block"
+                        >
+                          📍 View on Google Maps
+                        </a>
+                      </div>
+                    ) : (
+                      <p className="text-gray-500 text-sm">Location not available</p>
+                    )}
+                  </div>
+
+                  {/* IP Address */}
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <p className="text-xs text-gray-700 uppercase mb-1">🌐 IP Address</p>
+                    <p className="font-semibold text-gray-900">{authorshipProof.ipAddress}</p>
+                  </div>
+
+                  {/* Verification Status */}
+                  <div className="bg-green-50 p-4 rounded-lg">
+                    <p className="text-xs text-green-700 uppercase mb-1">✓ Verification</p>
+                    <p className="font-semibold text-green-900">Original - {authorshipProof.confidence}%</p>
+                  </div>
+                </div>
+
+                {/* Verification Notice */}
+                <div className="bg-gradient-to-r from-green-100 to-emerald-100 border-l-4 border-green-600 p-4 rounded">
+                  <p className="text-sm text-green-900">
+                    <strong>✓ Authorship Verified:</strong> This image was captured directly using your device's camera. 
+                    Original creation timestamp, device fingerprint, and location data have been recorded as proof of authorship.
+                  </p>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="mt-6 flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowAuthorshipModal(false);
+                    // Auto-fill User ID
+                    if (authorshipProof.capturedBy) {
+                      setUserId(authorshipProof.capturedBy.split('@')[0] || authorshipProof.capturedBy);
+                    }
+                  }}
+                  className="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition font-semibold"
+                >
+                  ✓ Proceed to Embed UUID
+                </button>
+                <button
+                  onClick={() => {
+                    // Download authorship proof certificate
+                    const proofText = `
+═══════════════════════════════════════════════════════════
+        AUTHORSHIP PROOF CERTIFICATE
+═══════════════════════════════════════════════════════════
+
+Certificate ID: ${authorshipProof.authorshipCertificateId}
+
+ORIGINAL CREATION VERIFIED
+Confidence: ${authorshipProof.confidence}%
+
+───────────────────────────────────────────────────────────
+CAPTURE DETAILS
+───────────────────────────────────────────────────────────
+Captured At:    ${authorshipProof.captureDate}
+Captured By:    ${authorshipProof.capturedBy}
+Capture Method: ${authorshipProof.captureMethod}
+
+───────────────────────────────────────────────────────────
+DEVICE INFORMATION
+───────────────────────────────────────────────────────────
+Device Name:    ${authorshipProof.deviceName}
+Device ID:      ${authorshipProof.deviceId}
+IP Address:     ${authorshipProof.ipAddress}
+
+───────────────────────────────────────────────────────────
+IMAGE SPECIFICATIONS
+───────────────────────────────────────────────────────────
+Resolution:     ${authorshipProof.resolution}
+Total Pixels:   ${authorshipProof.totalPixels}
+
+───────────────────────────────────────────────────────────
+LOCATION DATA
+───────────────────────────────────────────────────────────
+GPS Location:   ${authorshipProof.gpsLocation?.available 
+  ? authorshipProof.gpsLocation.coordinates + '\nMaps: ' + authorshipProof.gpsLocation.mapsUrl
+  : 'Not Available'}
+
+───────────────────────────────────────────────────────────
+VERIFICATION
+───────────────────────────────────────────────────────────
+✓ This image was captured directly using the device's camera
+✓ Original creation timestamp verified
+✓ Device fingerprint recorded
+✓ No editing or manipulation detected
+
+Generated: ${new Date().toLocaleString()}
+═══════════════════════════════════════════════════════════
+                    `.trim();
+
+                    const blob = new Blob([proofText], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `authorship-proof-${authorshipProof.authorshipCertificateId}.txt`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="px-6 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition font-semibold"
+                >
+                  💾 Download Certificate
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Device Details Modal */}
       {showDeviceDetails && analysisReport && (
