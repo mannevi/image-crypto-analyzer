@@ -1868,11 +1868,11 @@ canvas.toBlob((blob) => {
               console.error('❌ Error message:', err.message);
               console.error('❌ Error response:', err.response?.data);
               console.error('❌ Status code:', err.response?.status);
-              // Don't block the encryption - just log the error
             });
           }).catch(err => {
             console.error('❌ API import failed:', err);
           });
+        };
         reader.readAsDataURL(blob);
 
         // ── Update forensicsStats via helper ────────────────────────────────
@@ -1894,6 +1894,8 @@ canvas.toBlob((blob) => {
     };
     img.src = preview;
   };
+
+  // Rotate canvas by specified degrees (90, 180, 270)
 
         
 
