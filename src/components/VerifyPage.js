@@ -32,43 +32,71 @@ function VerifyPage() {
     return Math.abs(hash).toString(36).toUpperCase().padStart(12, '0');
   };
 
-  // Extract UUID from image (same as analyzer)
-  const extractUUID = (imageData) => {
+  // Extract UUID from image using ADVANCED method (same as ImageCryptoAnalyzer)
+  const extractUUIDAdvanced = (imageData) => {
     const data = imageData.data;
-    let binaryMessage = '';
+    const imgW = imageData.width;
+    const TILE = 12;
+    const PAYLOAD_BITS = 280;
 
-    for (let i = 0; i < data.length; i += 4) {
-      for (let j = 0; j < 3; j++) {
-        binaryMessage += (data[i + j] & 1).toString();
+    // Helper: CRC16
+    const crc16js = (bytes) => {
+      let crc = 0xFFFF;
+      for (let i = 0; i < bytes.length; i++) {
+        crc ^= bytes[i] << 8;
+        for (let j = 0; j < 8; j++)
+          crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
       }
-    }
+      return crc & 0xFFFF;
+    };
 
-    for (let i = 0; i < binaryMessage.length - 800; i += 8) {
-      let text = '';
-      for (let j = i; j < i + 5000; j += 8) {
-        const byte = binaryMessage.substr(j, 8);
-        if (byte.length < 8) break;
-        const charCode = parseInt(byte, 2);
-        if (charCode >= 32 && charCode <= 126) {
-          text += String.fromCharCode(charCode);
-        }
+    // Helper: Parse payload
+    const parsePayloadBits = (bits) => {
+      if (bits.length < PAYLOAD_BITS) return null;
+      const bytes = new Uint8Array(35);
+      for (let i = 0; i < 35; i++) {
+        let v = 0;
+        for (let b = 0; b < 8; b++) v = (v << 1) | (bits[i * 8 + b] || 0);
+        bytes[i] = v;
       }
+      const lenByte = bytes[0];
+      if (lenByte <= 0 || lenByte > 32) return null;
+      const uuidPadded = bytes.slice(1, 33);
+      const crcRead = (bytes[33] << 8) | bytes[34];
+      const forCrc = new Uint8Array(33);
+      forCrc[0] = lenByte;
+      forCrc.set(uuidPadded, 1);
+      if (crc16js(forCrc) !== crcRead) return null;
+      let uid = '';
+      for (let i = 0; i < lenByte; i++) uid += String.fromCharCode(uuidPadded[i]);
+      return uid;
+    };
 
-      if ((text.includes('IMGCRYPT2|') || text.includes('IMGCRYPT|')) && text.includes('|END')) {
-        const isV2 = text.includes('IMGCRYPT2|');
-        const startIdx = text.indexOf(isV2 ? 'IMGCRYPT2|' : 'IMGCRYPT|') + (isV2 ? 10 : 9);
-        const endIdx = text.indexOf('|END');
-        const content = text.substring(startIdx, endIdx);
-        const parts = content.split('|');
-        
-        if (parts.length >= 2) {
-          return {
-            found: true,
-            userId: parts[0] || null,
-            deviceId: parts[3] || null,
-            timestamp: parts[2] || null
-          };
-        }
+    // Decode with tile voting
+    const decodeWithOffset = (ox, oy) => {
+      const votes = new Array(PAYLOAD_BITS).fill(0);
+      const counts = new Array(PAYLOAD_BITS).fill(0);
+      for (let idx = 0; idx < data.length; idx += 4) {
+        const pi = idx / 4;
+        const tx = ((pi % imgW) + ox) % TILE;
+        const ty = (Math.floor(pi / imgW) + oy) % TILE;
+        const p = ty * TILE + tx;
+        const i0 = (2 * p) % PAYLOAD_BITS;
+        const i1 = (2 * p + 1) % PAYLOAD_BITS;
+        votes[i0] += (data[idx] & 1);
+        counts[i0]++;
+        votes[i1] += (data[idx + 1] & 1);
+        counts[i1]++;
+      }
+      const bits = votes.map((v, i) => (counts[i] > 0 && v > counts[i] / 2) ? 1 : 0);
+      return parsePayloadBits(bits);
+    };
+
+    // Try all offsets
+    for (let oy = 0; oy < TILE; oy++) {
+      for (let ox = 0; ox < TILE; ox++) {
+        const uid = decodeWithOffset(ox, oy);
+        if (uid) return { found: true, userId: uid };
       }
     }
 
@@ -102,17 +130,14 @@ function VerifyPage() {
       let canvas = degrees === 0 ? sourceCanvas : rotateCanvas(sourceCanvas, degrees);
       const ctx = canvas.getContext('2d');
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const uuidResult = extractUUID(imageData);
+      const result = extractUUIDAdvanced(imageData);  // ← Use new extraction
       
-      if (uuidResult.found) {
-        return {
-          ...uuidResult,
-          rotation: degrees
-        };
+      if (result.found) {
+        return { ...result, rotation: degrees };
       }
     }
     
-    return { found: false };
+    return { found: false, rotation: 0 };
   };
 
   // SIMPLE DETECTION: Report what actually changed, no smart assumptions
