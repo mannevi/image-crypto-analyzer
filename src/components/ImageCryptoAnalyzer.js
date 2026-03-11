@@ -1533,7 +1533,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const [captureSource, setCaptureSource] = useState('Browser Upload');
   const [preview, setPreview] = useState(null);
   const [userId, setUserId] = useState(
-  localStorage.getItem('userUUID') || '');
+    localStorage.getItem('userUUID') || ''
+  );
   const [encryptedImage, setEncryptedImage] = useState(null);
   const [encryptedFileName, setEncryptedFileName] = useState('encrypted-image.png');
   const [analysisReport, setAnalysisReport] = useState(null);
@@ -1705,6 +1706,13 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       reader.onload = (e) => setPreview(e.target.result);
       reader.readAsDataURL(file);
       stopCamera();
+
+      // ── Auto-embed UUID immediately after camera capture ──
+      const autoUUID = localStorage.getItem('userUUID') || '';
+      if (autoUUID) {
+        setUserId(autoUUID);
+        setTimeout(() => { embedUUID(); }, 600);
+      }
     });
   };
 
@@ -1720,10 +1728,17 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   };
 
   const embedUUID = async () => {
-    if (!selectedFile || !userId) {
-alert('Please select an image');
+    // Auto-load UUID if not already set
+    const currentUUID = userId || localStorage.getItem('userUUID') || '';
+    if (!selectedFile) {
+      alert('Please select an image');
       return;
     }
+    if (!currentUUID) {
+      alert('Please login again to get your UUID');
+      return;
+    }
+    if (currentUUID !== userId) setUserId(currentUUID);
 
     setProcessing(true);
 
@@ -2227,13 +2242,13 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
                   <div className="grid md:grid-cols-2 gap-6">
                     <div>
                       <label className="block font-semibold mb-2 text-gray-700">User ID (UUID)</label>
-<input
-  className="w-full border rounded px-3 py-2 bg-gray-100 text-gray-500 cursor-not-allowed"
-  value={userId}
-  readOnly
-  placeholder="Auto-filled from your account"
-/>
-<p className="text-xs text-gray-400 mt-1">UUID is automatically assigned from your account</p>
+                      <input
+                        type="text"
+                        value={userId}
+                        onChange={(e) => setUserId(e.target.value)}
+                        placeholder="Enter unique identifier"
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
                     </div>
                   </div>
 
