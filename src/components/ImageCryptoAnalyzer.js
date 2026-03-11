@@ -1842,8 +1842,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
           
           // Save to backend with CORRECT Asset ID
           import('../api/client').then(({ vaultAPI }) => {
-            vaultAPI.save({
-              asset_id:           assetId,  // ← Use the hash-based Asset ID!
+            const vaultData = {
+              asset_id:           assetId,
               owner_name:         userId,
               file_name:          filename,
               file_size:          `${(blob.size / 1024).toFixed(2)} KB`,
@@ -1855,26 +1855,24 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
               visual_fingerprint: perceptualHash,
               blockchain_anchor:  blockchainAnchor,
               resolution:         `${canvas.width}x${canvas.height}`,
-              capture_timestamp:  captureTimeData.timestamp,
-            }).then(() => {
-              console.log('✅ Saved to vault with Asset ID:', assetId);
-            }).catch(err => console.error('❌ Vault save failed:', err));
-          }).catch(err => console.error('❌ API import failed:', err));
-        };
-        reader.readAsDataURL(blob);
-
-        // ── Update forensicsStats via helper ────────────────────────────────
-        updateForensicsStats('encrypted', {
-          userId: userId,
-          fileName: filename
-        });
-
-          try {
-            // Backend API save is handled by saveToVault above
-            console.log('✅ Vault entry prepared for backend');
-          } catch (e) {
-            console.error('Failed to save to vault:', e);
-          }
+              capture_timestamp:  captureTimeData.timestamp || new Date().toISOString(),
+            };
+            
+            console.log('🔵 Attempting to save to vault:', vaultData);
+            
+            vaultAPI.save(vaultData).then((response) => {
+              console.log('✅ Vault save SUCCESS:', response);
+              console.log('✅ Asset ID saved:', assetId);
+              alert(`Image encrypted and saved to vault!\nAsset ID: ${assetId}`);
+            }).catch(err => {
+              console.error('❌ Vault save FAILED:', err);
+              console.error('❌ Error details:', err.message, err.response);
+              alert(`Warning: Image encrypted but vault save failed!\n${err.message}\nAsset ID: ${assetId}`);
+            });
+          }).catch(err => {
+            console.error('❌ API import FAILED:', err);
+            alert(`Error: Could not load vault API!\n${err.message}`);
+          });
         };
         reader.readAsDataURL(blob);
 
