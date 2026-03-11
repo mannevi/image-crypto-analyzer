@@ -1532,7 +1532,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [captureSource, setCaptureSource] = useState('Browser Upload');
   const [preview, setPreview] = useState(null);
-  const [userId, setUserId] = useState('');
+  const [userId, setUserId] = useState(
+  localStorage.getItem('userUUID') || '');
   const [encryptedImage, setEncryptedImage] = useState(null);
   const [encryptedFileName, setEncryptedFileName] = useState('encrypted-image.png');
   const [analysisReport, setAnalysisReport] = useState(null);
@@ -1720,7 +1721,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
 
   const embedUUID = async () => {
     if (!selectedFile || !userId) {
-      alert('Please select an image and enter User ID');
+alert('Please select an image');
       return;
     }
 
@@ -2226,13 +2227,13 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
                   <div className="grid md:grid-cols-2 gap-6">
                     <div>
                       <label className="block font-semibold mb-2 text-gray-700">User ID (UUID)</label>
-                      <input
-                        type="text"
-                        value={userId}
-                        onChange={(e) => setUserId(e.target.value)}
-                        placeholder="Enter unique identifier"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
+<input
+  className="w-full border rounded px-3 py-2 bg-gray-100 text-gray-500 cursor-not-allowed"
+  value={userId}
+  readOnly
+  placeholder="Auto-filled from your account"
+/>
+<p className="text-xs text-gray-400 mt-1">UUID is automatically assigned from your account</p>
                     </div>
                   </div>
 

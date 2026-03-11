@@ -39,7 +39,7 @@ function Login({ onLogin }) {
 
       // Save last login time
       localStorage.setItem(`lastLogin_${data.user.email}`, new Date().toISOString());
-
+        localStorage.setItem('userUUID', data.user.id);
       onLogin(data.user, data.access_token);
       navigate(data.user.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
 
