@@ -1860,14 +1860,14 @@ canvas.toBlob((blob) => {
           import('../api/client').then(({ vaultAPI }) => {
             const vaultPayload = {
   asset_id:           assetId,
-  owner_name:         user?.name || user?.email || user?.username || userId,
-  user_id:            userId,  // ← ADD this line - the UUID for User ID field
+  owner_name:         user?.name || user?.email || user?.username || userId,  // ← Shows registered username/name
+  user_id:            userId,  // ← Shows the UUID entered during encryption
   file_name:          filename,
-              file_size:          `${(blob.size / 1024).toFixed(2)} KB`,
-              thumbnail_base64:   thumbnail,
-              device_id:          deviceInfo.deviceId || 'UNKNOWN',
-              certificate_id:     certId,
-              owner_email:        user?.email || null,
+  file_size:          `${(blob.size / 1024).toFixed(2)} KB`,
+  thumbnail_base64:   thumbnail,
+  device_id:          deviceInfo.deviceId || 'UNKNOWN',
+  certificate_id:     certId,
+  owner_email:        user?.email || null,
               file_hash:          sha256Hash || null,
               visual_fingerprint: perceptualHash || null,
               blockchain_anchor:  blockchainAnchor || null,
