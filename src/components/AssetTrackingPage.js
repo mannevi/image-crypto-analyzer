@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Search, Calendar, CheckCircle, XCircle, Activity, TrendingUp,
   GitCompare, Upload, AlertTriangle, Shield, Download, Link,
-  X, ChevronRight, Eye, Cpu, Hash, Fingerprint, Lock, Clock, Wrench, MapPin
+  X, ChevronRight, Eye, Cpu, Hash, Fingerprint, Lock, Clock, Wrench, MapPin, Trash2
 } from 'lucide-react';
 import './AssetTrackingPage.css';
 
@@ -944,6 +944,8 @@ function AssetTrackingPage() {
   const [compareAsset, setCompareAsset]     = useState(null);
   const [compareFile, setCompareFile]       = useState(null);
   const [comparePreview, setComparePreview] = useState(null);
+  const [deleteConfirm, setDeleteConfirm]   = useState(null);
+  const [deleting, setDeleting]             = useState(false);
   const [comparing, setComparing]           = useState(false);
   const [comparisonResult, setComparisonResult] = useState(null);
   const [linkCopied, setLinkCopied]         = useState(false);
@@ -1023,6 +1025,33 @@ useEffect(() => {
       (a.certificateId || '').toLowerCase().includes(q) ||
       (a.deviceId || '').toLowerCase().includes(q)
     ));
+  };
+
+  const deleteAsset = async (asset) => {
+    setDeleting(true);
+    const id = asset.assetId || asset.id;
+    try {
+      const { vaultAPI } = await import('../api/client');
+      await vaultAPI.delete(id);
+    } catch (err) {
+      console.warn('Backend delete failed:', err);
+    }
+    // Remove from localStorage
+    try {
+      const vault = JSON.parse(localStorage.getItem('vaultImages') || '[]');
+      localStorage.setItem('vaultImages', JSON.stringify(
+        vault.filter(a => a.assetId !== id && a.id !== id)
+      ));
+      const reports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+      localStorage.setItem('analysisReports', JSON.stringify(
+        reports.filter(a => a.assetId !== id && a.id !== id)
+      ));
+    } catch (e) { console.warn(e); }
+    // Remove from UI
+    setAssets(prev => prev.filter(a => (a.assetId || a.id) !== id));
+    setFilteredAssets(prev => prev.filter(a => (a.assetId || a.id) !== id));
+    setDeleting(false);
+    setDeleteConfirm(null);
   };
 
   const openCompare = (asset) => {
@@ -1188,9 +1217,25 @@ useEffect(() => {
                     }
                   </td>
                   <td>
-                    <button className="btn-compare" onClick={() => openCompare(asset)}>
-                      <GitCompare size={14} /> Compare
-                    </button>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <button className="btn-compare" onClick={() => openCompare(asset)}>
+                        <GitCompare size={14} /> Compare
+                      </button>
+                      <button
+                        onClick={() => setDeleteConfirm(asset)}
+                        title="Delete Asset"
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          width: '32px', height: '32px', border: 'none', borderRadius: '6px',
+                          background: '#fee2e2', color: '#dc2626', cursor: 'pointer',
+                          flexShrink: 0
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#fca5a5'}
+                        onMouseLeave={e => e.currentTarget.style.background = '#fee2e2'}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1471,6 +1516,48 @@ useEffect(() => {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="compare-overlay" onClick={() => !deleting && setDeleteConfirm(null)}>
+          <div className="compare-panel" style={{ maxWidth: '420px', height: 'auto', padding: '0' }} onClick={e => e.stopPropagation()}>
+            <div className="compare-header" style={{ borderBottom: '1px solid #fee2e2' }}>
+              <h2 style={{ color: '#dc2626', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px' }}>
+                <Trash2 size={18} /> Delete Asset
+              </h2>
+              <button className="btn-close" onClick={() => setDeleteConfirm(null)}><X size={20} /></button>
+            </div>
+            <div style={{ padding: '24px' }}>
+              <p style={{ color: '#374151', marginBottom: '12px', fontSize: '14px' }}>
+                Are you sure you want to permanently delete this asset?
+              </p>
+              <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '12px', fontSize: '13px', color: '#7f1d1d' }}>
+                <div><strong>Asset ID:</strong> {deleteConfirm.assetId}</div>
+                <div><strong>Owner:</strong> {deleteConfirm.ownerName || deleteConfirm.owner || '—'}</div>
+                <div style={{ marginTop: '8px', fontWeight: '600' }}>
+                  ⚠️ This removes the asset from backend and local storage permanently.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  disabled={deleting}
+                  style={{ padding: '9px 18px', borderRadius: '8px', border: '1px solid #d1d5db', background: 'white', cursor: 'pointer', fontWeight: '600', fontSize: '13px' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => deleteAsset(deleteConfirm)}
+                  disabled={deleting}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '9px 18px', background: deleting ? '#fca5a5' : '#dc2626', color: 'white', border: 'none', borderRadius: '8px', cursor: deleting ? 'not-allowed' : 'pointer', fontWeight: '600', fontSize: '13px' }}
+                >
+                  <Trash2 size={14} />
+                  {deleting ? 'Deleting...' : 'Yes, Delete'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
