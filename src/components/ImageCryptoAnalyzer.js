@@ -1859,9 +1859,10 @@ canvas.toBlob((blob) => {
           // ACTUALLY save to backend vault API
           import('../api/client').then(({ vaultAPI }) => {
             const vaultPayload = {
-              asset_id:           assetId,
-              owner_name:         userId,
-              file_name:          filename,
+  asset_id:           assetId,
+  owner_name:         user?.name || user?.email || user?.username || userId,
+  user_id:            userId,  // ← ADD this line - the UUID for User ID field
+  file_name:          filename,
               file_size:          `${(blob.size / 1024).toFixed(2)} KB`,
               thumbnail_base64:   thumbnail,
               device_id:          deviceInfo.deviceId || 'UNKNOWN',
