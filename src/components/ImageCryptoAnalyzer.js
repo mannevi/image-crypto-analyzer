@@ -2024,6 +2024,43 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
     console.error('Error saving report:', error);
   }
 };
+} catch (error) {
+    console.error('Error saving report:', error);
+  }
+};
+
+  // Save analysis to Track Assets (admin tracking system)
+  const saveToTrackAssets = (report, imagePreview) => {
+    try {
+      import('../api/client').then(({ compareAPI }) => {
+        compareAPI.save({
+          asset_id:            report.assetId,
+          is_tampered:         report.detectedCase?.includes('Encrypted') ? false : true,
+          confidence:          Math.round(report.confidence || 0),
+          phash_sim:           null,
+          visual_verdict:      report.detectedCase || 'Unknown',
+          editing_tool:        'Unknown',
+          changes:             report.reasoning || [],
+          pixel_analysis:      report.metrics || {},
+          uploaded_resolution: report.assetResolution || null,
+          uploaded_size:       report.assetFileSize || '0 KB',
+          original_capture_time: report.timestamp ? new Date(report.timestamp).toISOString() : null,
+          modified_file_time:    new Date().toISOString(),
+        }).then(() => {
+          console.log('✅ Saved to Track Assets:', report.assetId);
+        }).catch(err => {
+          console.error('❌ Track Assets save failed:', err);
+          console.error('❌ Error details:', err.message, err.response?.data);
+        });
+      }).catch(err => {
+        console.error('❌ Track Assets API import failed:', err);
+      });
+    } catch (error) {
+      console.error('❌ Error saving to Track Assets:', error);
+    }
+  };
+
+  
   const analyzeImage = async () => {
     if (!selectedFile) {
       alert('Please select an image to analyze');
@@ -2159,6 +2196,8 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
 
       // [NEW] Generate and save comprehensive certificate
       saveCertificate(report, preview);
+	  // [NEW] Save to Track Assets for admin tracking
+      saveToTrackAssets(report, preview);
     };
     img.src = preview;
   };
