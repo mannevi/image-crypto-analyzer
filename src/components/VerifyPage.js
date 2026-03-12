@@ -205,15 +205,19 @@ function VerifyPage() {
           const allAssets = response?.data || response || [];
 
           const backendMatch = allAssets.find(a =>
-            a.owner_name === uuidResult.userId ||
-            a.asset_id   === uuidResult.userId
+            a.owner_name      === uuidResult.userId ||
+            a.asset_id        === uuidResult.userId ||
+            a.user_id         === uuidResult.userId ||
+            a.uuid            === uuidResult.userId ||
+            a.watermark_id    === uuidResult.userId ||
+            a.unique_user_id  === uuidResult.userId
           );
 
           if (backendMatch) {
             matchFound   = true;
             matchedAsset = {
-              userName     : backendMatch.owner_name,
-              uniqueUserId : backendMatch.owner_name,
+              userName     : backendMatch.owner_name || backendMatch.user_name || backendMatch.name,
+              uniqueUserId : backendMatch.owner_name || backendMatch.asset_id,
               dateEncrypted: backendMatch.capture_timestamp || backendMatch.created_at,
             };
           }
@@ -230,7 +234,10 @@ function VerifyPage() {
         if (uuidResult.found) {
           const found = storedAssets.find(a =>
             (a.uniqueUserId && a.uniqueUserId === uuidResult.userId) ||
-            (a.userId       && a.userId       === uuidResult.userId)
+            (a.userId       && a.userId       === uuidResult.userId) ||
+            (a.uuid         && a.uuid         === uuidResult.userId) ||
+            (a.owner_name   && a.owner_name   === uuidResult.userId) ||
+            (a.asset_id     && a.asset_id     === uuidResult.userId)
           );
           if (found) {
             matchFound   = true;
@@ -244,8 +251,9 @@ function VerifyPage() {
 
       setVerificationResult({
         matchFound,
-        asset: matchedAsset,
-        uuid : uuidResult.userId || null,
+        asset    : matchedAsset,
+        uuid     : uuidResult.userId || null,
+        uuidFound: uuidResult.found,
       });
 
       setVerifying(false);
@@ -430,20 +438,41 @@ function VerifyPage() {
                 border: '2px solid #fca5a5',
                 borderRadius: '14px',
                 padding: '24px',
-                display: 'flex',
-                gap: '14px',
-                alignItems: 'flex-start',
               }}>
-                <XCircle size={26} color="#dc2626" style={{ flexShrink: 0, marginTop: '2px' }} />
-                <div>
-                  <p style={{ fontWeight: '700', color: '#991b1b', fontSize: '16px', marginBottom: '6px' }}>
-                    No Match Found
-                  </p>
-                  <p style={{ color: '#7f1d1d', fontSize: '13px', lineHeight: '1.7' }}>
-                    This image does not match any encrypted assets in the database.<br />
-                    It may not have been watermarked with this system, or the watermark may have been damaged.
-                  </p>
+                <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+                  <XCircle size={26} color="#dc2626" style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div>
+                    <p style={{ fontWeight: '700', color: '#991b1b', fontSize: '16px', marginBottom: '6px' }}>
+                      No Match Found
+                    </p>
+                    <p style={{ color: '#7f1d1d', fontSize: '13px', lineHeight: '1.7' }}>
+                      {verificationResult.uuidFound
+                        ? 'Watermark was detected but the UUID did not match any record in the database.'
+                        : 'No watermark detected. This image may not have been encrypted with this system.'}
+                    </p>
+                  </div>
                 </div>
+
+                {/* Debug info — shows extracted UUID so you can cross-check */}
+                {verificationResult.uuidFound && verificationResult.uuid && (
+                  <div style={{
+                    marginTop: '16px',
+                    padding: '12px 14px',
+                    background: '#fff7f7',
+                    border: '1px solid #fecaca',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: '#7f1d1d',
+                  }}>
+                    <span style={{ fontWeight: '600' }}>Extracted UUID: </span>
+                    <span style={{ fontFamily: 'monospace', letterSpacing: '0.04em' }}>
+                      {verificationResult.uuid}
+                    </span>
+                    <div style={{ marginTop: '6px', color: '#991b1b', fontSize: '11px' }}>
+                      ⚠️ This UUID was found in the image but has no matching record. Check that this asset was saved to the vault/backend under the same UUID.
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
