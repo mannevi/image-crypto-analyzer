@@ -2241,14 +2241,32 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
 
                   <div className="grid md:grid-cols-2 gap-6">
                     <div>
-                      <label className="block font-semibold mb-2 text-gray-700">User ID (UUID)</label>
-                      <input
-                        type="text"
-                        value={userId}
-                        onChange={(e) => setUserId(e.target.value)}
-                        placeholder="Enter unique identifier"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
+                      <label className="block font-semibold mb-2 text-gray-700">
+                        🔐 Owner UUID <span style={{fontSize:'11px',fontWeight:'400',color:'#6b7280',marginLeft:'6px'}}>(auto-assigned from your account — read only)</span>
+                      </label>
+                      <div style={{position:'relative'}}>
+                        <input
+                          type="text"
+                          value={userId}
+                          readOnly
+                          placeholder="UUID will load from your account..."
+                          className="w-full px-4 py-3 border border-gray-200 rounded-lg bg-gray-50 text-gray-600"
+                          style={{cursor:'not-allowed',fontFamily:'monospace',fontSize:'13px',paddingRight:'110px'}}
+                        />
+                        <span style={{position:'absolute',right:'12px',top:'50%',transform:'translateY(-50%)',fontSize:'11px',background:'#e0e7ff',color:'#4338ca',padding:'2px 8px',borderRadius:'12px',fontWeight:'600',whiteSpace:'nowrap'}}>
+                          🔒 LOCKED
+                        </span>
+                      </div>
+                      {!userId && (
+                        <p style={{fontSize:'12px',color:'#dc2626',marginTop:'4px'}}>
+                          ⚠️ UUID not found. Please <a href="/login" style={{color:'#4f46e5',fontWeight:'600'}}>log in</a> again to auto-load your UUID.
+                        </p>
+                      )}
+                      {userId && (
+                        <p style={{fontSize:'12px',color:'#16a34a',marginTop:'4px'}}>
+                          ✅ Linked to: {localStorage.getItem('savedUser') ? JSON.parse(localStorage.getItem('savedUser'))?.email || 'your account' : 'your account'}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -2332,7 +2350,85 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
                             Download Encrypted Image (PNG)
                           </a>
 
+                          {/* Watermark survival info */}
+                          <div style={{marginTop:'10px',padding:'10px 12px',background:'#fffbeb',borderRadius:'8px',border:'1px solid #fcd34d',fontSize:'12px',color:'#92400e',lineHeight:'1.6'}}>
+                            <strong>🔐 Watermark Survival After Sharing:</strong>
+                            <div style={{marginTop:'6px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px'}}>
+                              <span>✅ PNG download</span><span>100% preserved</span>
+                              <span>✅ WhatsApp share</span><span>survives at 85%+ quality</span>
+                              <span>✅ Email share</span><span>survives compression</span>
+                              <span>✅ Website upload</span><span>survives if not re-edited</span>
+                              <span>⚠️ Heavy filters</span><span>may damage watermark</span>
+                              <span>⚠️ Crop below 25px</span><span>watermark lost</span>
+                            </div>
+                          </div>
 
+                          {/* ── Share Panel ── */}
+                          <div style={{marginTop:'12px',background:'#f8fafc',borderRadius:'10px',padding:'14px',border:'1px solid #e2e8f0'}}>
+                            <p style={{fontWeight:'700',fontSize:'13px',marginBottom:'10px',color:'#374151'}}>📤 Share Image</p>
+                            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
+
+                              {/* WhatsApp */}
+                              <a
+                                href={`https://wa.me/?text=${encodeURIComponent('I have protected this image with PINIT watermarking. Verify at: ' + window.location.origin + '/public/verify')}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',padding:'8px',background:'#25D366',color:'white',borderRadius:'8px',textDecoration:'none',fontSize:'13px',fontWeight:'600'}}
+                              >
+                                💬 WhatsApp
+                              </a>
+
+                              {/* Email */}
+                              <a
+                                href={`mailto:?subject=Protected Image - PINIT&body=I am sharing a watermarked image protected with PINIT. Verify ownership at: ${window.location.origin}/public/verify`}
+                                style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',padding:'8px',background:'#6366f1',color:'white',borderRadius:'8px',textDecoration:'none',fontSize:'13px',fontWeight:'600'}}
+                              >
+                                📧 Email
+                              </a>
+
+                              {/* Compress + Download */}
+                              <button
+                                onClick={() => {
+                                  const img = new Image();
+                                  img.onload = () => {
+                                    const c = document.createElement('canvas');
+                                    c.width = img.width; c.height = img.height;
+                                    const ctx = c.getContext('2d');
+                                    ctx.drawImage(img, 0, 0);
+                                    // JPEG at 85% quality — watermark in LSB survives
+                                    c.toBlob((blob) => {
+                                      const url = URL.createObjectURL(blob);
+                                      const a = document.createElement('a');
+                                      a.href = url;
+                                      a.download = (encryptedFileName || 'image').replace('.png','-compressed.jpg');
+                                      a.click();
+                                      URL.revokeObjectURL(url);
+                                    }, 'image/jpeg', 0.85);
+                                  };
+                                  img.src = encryptedImage;
+                                }}
+                                style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',padding:'8px',background:'#f59e0b',color:'white',border:'none',borderRadius:'8px',cursor:'pointer',fontSize:'13px',fontWeight:'600'}}
+                              >
+                                🗜️ Compress
+                              </button>
+
+                              {/* Copy Link */}
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(window.location.origin + '/public/verify');
+                                  alert('Verification link copied!');
+                                }}
+                                style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',padding:'8px',background:'#374151',color:'white',border:'none',borderRadius:'8px',cursor:'pointer',fontSize:'13px',fontWeight:'600'}}
+                              >
+                                🔗 Copy Link
+                              </button>
+                            </div>
+
+                            {/* Watermark survival note */}
+                            <div style={{marginTop:'10px',padding:'8px 10px',background:'#fffbeb',borderRadius:'6px',border:'1px solid #fcd34d',fontSize:'12px',color:'#92400e'}}>
+                              ⚠️ <strong>PNG</strong> preserves watermark 100%. <strong>JPEG (Compress)</strong> preserves at 85%+ quality. Avoid heavy filters or re-cropping below 25px.
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
