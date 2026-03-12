@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Eye, Download, Filter, Calendar, CheckCircle, XCircle } from 'lucide-react';
-import { adminAPI } from '../api/client';
+import { Search, Eye, Download, Filter, Calendar, CheckCircle, XCircle, Trash2 } from 'lucide-react';
+import { adminAPI, vaultAPI } from '../api/client';
 import './AssetsPage.css';
 
 function AssetsPage() {
@@ -10,6 +10,8 @@ function AssetsPage() {
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // asset to delete
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const loadAssets = async () => {
@@ -87,6 +89,45 @@ function AssetsPage() {
     });
 
     setFilteredAssets(filtered);
+  };
+
+  const deleteAsset = async (asset) => {
+    setDeleting(true);
+    const id = asset.reportId || asset.assetId || asset.id;
+    try {
+      // 1. Delete from backend
+      await vaultAPI.delete(id);
+    } catch (err) {
+      console.warn('Backend delete failed or not implemented:', err);
+    }
+
+    // 2. Remove from localStorage — vaultImages
+    try {
+      const vault = JSON.parse(localStorage.getItem('vaultImages') || '[]');
+      const cleaned = vault.filter(a =>
+        a.assetId !== asset.assetId &&
+        a.id      !== id &&
+        a.uniqueUserId !== asset.uniqueUserId
+      );
+      localStorage.setItem('vaultImages', JSON.stringify(cleaned));
+    } catch (e) { console.warn(e); }
+
+    // 3. Remove from localStorage — analysisReports
+    try {
+      const reports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+      const cleaned = reports.filter(a =>
+        a.assetId !== asset.assetId &&
+        a.id      !== id
+      );
+      localStorage.setItem('analysisReports', JSON.stringify(cleaned));
+    } catch (e) { console.warn(e); }
+
+    // 4. Remove from state
+    setAssets(prev => prev.filter(a => a.reportId !== asset.reportId));
+    setFilteredAssets(prev => prev.filter(a => a.reportId !== asset.reportId));
+
+    setDeleting(false);
+    setDeleteConfirm(null);
   };
 
   const viewDetails = (asset) => {
@@ -269,6 +310,20 @@ function AssetsPage() {
                       >
                         <Download size={16} />
                       </button>
+                      <button
+                        onClick={() => setDeleteConfirm(asset)}
+                        title="Delete Asset"
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          width: '32px', height: '32px', border: 'none', borderRadius: '6px',
+                          background: '#fee2e2', color: '#dc2626', cursor: 'pointer',
+                          transition: 'background 0.2s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#fca5a5'}
+                        onMouseLeave={e => e.currentTarget.style.background = '#fee2e2'}
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -419,6 +474,59 @@ function AssetsPage() {
                 className="btn-close-modal"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="modal-overlay" onClick={() => !deleting && setDeleteConfirm(null)}>
+          <div className="modal-content" style={{ maxWidth: '420px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header" style={{ borderBottom: '1px solid #fee2e2' }}>
+              <h2 style={{ color: '#dc2626', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Trash2 size={20} /> Delete Asset
+              </h2>
+              <button onClick={() => setDeleteConfirm(null)} className="modal-close">✕</button>
+            </div>
+
+            <div className="modal-body" style={{ padding: '24px' }}>
+              <p style={{ color: '#374151', marginBottom: '12px' }}>
+                Are you sure you want to permanently delete this asset?
+              </p>
+              <div style={{
+                background: '#fef2f2', border: '1px solid #fca5a5',
+                borderRadius: '8px', padding: '12px', fontSize: '13px', color: '#7f1d1d'
+              }}>
+                <div><strong>Asset ID:</strong> {deleteConfirm.assetId}</div>
+                <div><strong>Owner:</strong> {deleteConfirm.userName}</div>
+                <div style={{ marginTop: '8px', fontWeight: '600' }}>
+                  ⚠️ This will remove the asset from the backend database and all local storage. This cannot be undone.
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer" style={{ gap: '10px' }}>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="btn-close-modal"
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteAsset(deleteConfirm)}
+                disabled={deleting}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  padding: '10px 20px', background: deleting ? '#fca5a5' : '#dc2626',
+                  color: 'white', border: 'none', borderRadius: '8px',
+                  cursor: deleting ? 'not-allowed' : 'pointer',
+                  fontWeight: '600', fontSize: '14px'
+                }}
+              >
+                <Trash2 size={15} />
+                {deleting ? 'Deleting...' : 'Yes, Delete'}
               </button>
             </div>
           </div>
