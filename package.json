@@ -9,6 +9,7 @@
     "@capacitor/cli": "^8.2.0",
     "@capacitor/core": "^8.2.0",
     "@simplewebauthn/browser": "^13.2.2",
+    "capacitor-native-biometric": "^4.2.2",
     "lucide-react": "^0.562.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

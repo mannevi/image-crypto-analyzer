@@ -2,6 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import './Login.css';
 
+// Dynamically load native biometric only in Capacitor (APK)
+const isCapacitor = () => !!(window.Capacitor && window.Capacitor.isNativePlatform());
+
+const getNativeBiometric = async () => {
+  if (!isCapacitor()) return null;
+  try {
+    const { NativeBiometric } = await import('capacitor-native-biometric');
+    return NativeBiometric;
+  } catch {
+    return null;
+  }
+};
+
 function Login({ onLogin }) {
   const [isAdmin,            setIsAdmin]            = useState(false);
   const [formData,           setFormData]           = useState({ email: '', username: '', password: '' });
@@ -16,18 +29,26 @@ function Login({ onLogin }) {
 
   const checkBiometric = async () => {
     try {
-      // Check if device supports biometric (works on Android WebView/Capacitor)
-      const hasBiometric =
-        window.PublicKeyCredential &&
-        await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+      const savedToken = localStorage.getItem('savedToken');
+      const savedUser  = localStorage.getItem('savedUser');
 
-      if (hasBiometric) {
-        setBiometricAvailable(true);
-        // Auto-trigger if user was previously logged in
-        const savedToken = localStorage.getItem('savedToken');
-        const savedUser  = localStorage.getItem('savedUser');
-        if (savedToken && savedUser) {
-          handleBiometricLogin();
+      if (isCapacitor()) {
+        // Native APK — use capacitor-native-biometric
+        const NativeBiometric = await getNativeBiometric();
+        if (!NativeBiometric) return;
+        const result = await NativeBiometric.isAvailable();
+        if (result.isAvailable) {
+          setBiometricAvailable(true);
+          if (savedToken && savedUser) handleBiometricLogin();
+        }
+      } else {
+        // Web browser — use WebAuthn
+        const hasBiometric =
+          window.PublicKeyCredential &&
+          await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        if (hasBiometric) {
+          setBiometricAvailable(true);
+          if (savedToken && savedUser) handleBiometricLogin();
         }
       }
     } catch (e) {
@@ -36,45 +57,59 @@ function Login({ onLogin }) {
   };
 
   const handleBiometricLogin = async () => {
+    const savedToken = localStorage.getItem('savedToken');
+    const savedUser  = JSON.parse(localStorage.getItem('savedUser') || '{}');
+
+    if (!savedToken || !savedUser.id) {
+      setError('Please login with password first to enable biometrics.');
+      return;
+    }
+
     try {
-      const savedToken = localStorage.getItem('savedToken');
-      const savedUser  = JSON.parse(localStorage.getItem('savedUser') || '{}');
+      if (isCapacitor()) {
+        // Native APK — show fingerprint/face prompt directly
+        const NativeBiometric = await getNativeBiometric();
+        if (!NativeBiometric) throw new Error('Plugin not available');
 
-      if (!savedToken || !savedUser.id) {
-        setError('Please login with password first to enable biometrics.');
-        return;
-      }
+        await NativeBiometric.verifyIdentity({
+          reason  : 'Login to Image Forensics App',
+          title   : 'Biometric Login',
+          subtitle: 'Use fingerprint or face to login',
+          description: 'Place your finger on the sensor or look at the camera',
+        });
 
-      // Use device biometric via WebAuthn API
-      const credential = await navigator.credentials.get({
-        publicKey: {
-          challenge        : new Uint8Array(32),
-          rpId             : window.location.hostname,
-          userVerification : 'required',
-          timeout          : 60000
-        }
-      });
-
-      if (credential) {
-        // Biometric passed
+        // Biometric passed — login with saved credentials
         localStorage.setItem('userUUID', savedUser.id);
         onLogin(savedUser, savedToken);
         navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
-      }
 
+      } else {
+        // Web browser — WebAuthn fallback
+        const credential = await navigator.credentials.get({
+          publicKey: {
+            challenge        : crypto.getRandomValues(new Uint8Array(32)),
+            rpId             : window.location.hostname,
+            userVerification : 'required',
+            timeout          : 60000
+          }
+        });
+        if (credential) {
+          localStorage.setItem('userUUID', savedUser.id);
+          onLogin(savedUser, savedToken);
+          navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
+        }
+      }
     } catch (e) {
-      if (e.name === 'NotAllowedError') {
+      if (e.name === 'NotAllowedError' || e.message?.includes('cancelled') || e.message?.includes('cancel')) {
         setError('Biometric cancelled. Please use your password.');
       } else {
-        // Fallback — just login with saved token directly
-        const savedToken = localStorage.getItem('savedToken');
-        const savedUser  = JSON.parse(localStorage.getItem('savedUser') || '{}');
+        // Last resort fallback — just use saved token
         if (savedToken && savedUser.id) {
           localStorage.setItem('userUUID', savedUser.id);
           onLogin(savedUser, savedToken);
           navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
         } else {
-          setError('Biometric failed. Please use your password.');
+          setError('Biometric failed. Please login with password.');
         }
       }
     }

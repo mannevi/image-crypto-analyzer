@@ -797,7 +797,7 @@ const generateAssetId = (imageData) => {
 // ============================================
 
 const STEGO_TILE     = 12;
-const UUID_FIELD_LEN = 32;
+const UUID_FIELD_LEN = 36;
 const PAYLOAD_BYTES  = 1 + UUID_FIELD_LEN + 2; // 35 bytes
 const PAYLOAD_BITS   = PAYLOAD_BYTES * 8;       // 280 bits
 
