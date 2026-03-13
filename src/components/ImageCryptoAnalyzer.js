@@ -2021,9 +2021,9 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
     }).catch(err => console.warn('API import failed:', err.message));
 
   
-} catch (error) {
+  } catch (error) {
     console.error('Error saving report:', error);
-  }
+    }
 };
 
   // Save analysis to Track Assets (admin tracking system)
