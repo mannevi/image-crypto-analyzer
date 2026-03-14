@@ -7,35 +7,124 @@ import {
 } from 'lucide-react';
 import './AssetTrackingPage.css';
 
-// ─── pHash (8×8 perceptual hash) ─────────────────────────────────────────────
+// ─── pHash (16×16 DCT-based — 256 bits, much more discriminating than 8×8) ───
 const computePerceptualHashFromCanvas = (canvas) => {
   try {
+    // Step 1: Scale to 32×32 for DCT input
+    const SIZE = 32;
     const small = document.createElement('canvas');
-    small.width = 8; small.height = 8;
+    small.width = SIZE; small.height = SIZE;
     const ctx = small.getContext('2d');
-    ctx.drawImage(canvas, 0, 0, 8, 8);
-    const data = ctx.getImageData(0, 0, 8, 8).data;
-    const grays = [];
-    for (let i = 0; i < 64; i++)
-      grays.push(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
-    const avg = grays.reduce((a, b) => a + b, 0) / 64;
-    let bits = '';
-    for (const g of grays) bits += g >= avg ? '1' : '0';
+    ctx.drawImage(canvas, 0, 0, SIZE, SIZE);
+    const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
+
+    // Step 2: Convert to grayscale float grid
+    const gray = [];
+    for (let i = 0; i < SIZE * SIZE; i++)
+      gray.push(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
+
+    // Step 3: 2D DCT (compute top-left 16×16 low-frequency block)
+    const DCT = 16;
+    const dct = [];
+    for (let u = 0; u < DCT; u++) {
+      for (let v = 0; v < DCT; v++) {
+        let sum = 0;
+        for (let x = 0; x < SIZE; x++)
+          for (let y = 0; y < SIZE; y++)
+            sum += gray[x * SIZE + y]
+              * Math.cos(((2 * x + 1) * u * Math.PI) / (2 * SIZE))
+              * Math.cos(((2 * y + 1) * v * Math.PI) / (2 * SIZE));
+        dct.push(sum);
+      }
+    }
+
+    // Step 4: Remove DC coefficient (index 0), use remaining 255 values
+    const acDct = dct.slice(1); // 255 values
+    const median = [...acDct].sort((a, b) => a - b)[Math.floor(acDct.length / 2)];
+
+    // Step 5: Build 256-bit hash (pad to 256 with DC bit = 1)
+    const bits = ['1', ...acDct.map(v => (v >= median ? '1' : '0'))];
+    // bits.length = 256
     let hex = '';
-    for (let i = 0; i < 64; i += 4) hex += parseInt(bits.substr(i, 4), 2).toString(16);
-    return hex.toUpperCase();
+    for (let i = 0; i < 256; i += 4)
+      hex += parseInt(bits.slice(i, i + 4).join(''), 2).toString(16);
+    return hex.toUpperCase(); // 64-char hex = 256 bits
   } catch { return null; }
 };
 
+// pHash similarity — works on both 16-char (old 8×8) and 64-char (new 16×16)
 const pHashSimilarity = (h1, h2) => {
-  if (!h1 || !h2 || h1.length !== h2.length) return 0;
+  if (!h1 || !h2) return 0;
+  // If lengths differ (old vs new format), can't compare — return 0
+  if (h1.length !== h2.length) return 0;
+  const totalBits = h1.length * 4;
   let diff = 0;
   for (let i = 0; i < h1.length; i++) {
     const b1 = parseInt(h1[i], 16).toString(2).padStart(4, '0');
     const b2 = parseInt(h2[i], 16).toString(2).padStart(4, '0');
     for (let j = 0; j < 4; j++) if (b1[j] !== b2[j]) diff++;
   }
-  return Math.round(((64 - diff) / 64) * 100);
+  return Math.round(((totalBits - diff) / totalBits) * 100);
+};
+
+// ─── Rotate canvas by 90/180/270 degrees ─────────────────────────────────────
+const rotateCanvas = (src, degrees) => {
+  const c = document.createElement('canvas');
+  const swap = degrees === 90 || degrees === 270;
+  c.width  = swap ? src.height : src.width;
+  c.height = swap ? src.width  : src.height;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width / 2, c.height / 2);
+  ctx.rotate((degrees * Math.PI) / 180);
+  ctx.drawImage(src, -src.width / 2, -src.height / 2);
+  return c;
+};
+
+// Try all 4 rotations and return the best pHash similarity
+const pHashSimWithRotation = (uploadedCanvas, origPHash) => {
+  if (!origPHash) return { sim: 0, rotation: 0 };
+  let best = { sim: 0, rotation: 0 };
+  for (const deg of [0, 90, 180, 270]) {
+    const c   = deg === 0 ? uploadedCanvas : rotateCanvas(uploadedCanvas, deg);
+    const h   = computePerceptualHashFromCanvas(c);
+    const sim = pHashSimilarity(h, origPHash);
+    if (sim > best.sim) best = { sim, rotation: deg };
+  }
+  return best;
+};
+
+// ─── Colour histogram comparison (32-bin per channel) ────────────────────────
+const computeColorHistogram = (canvas) => {
+  try {
+    const SIZE = 128;
+    const c = document.createElement('canvas');
+    c.width = SIZE; c.height = SIZE;
+    c.getContext('2d').drawImage(canvas, 0, 0, SIZE, SIZE);
+    const data = c.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+    const BINS = 32;
+    const r = new Float32Array(BINS);
+    const g = new Float32Array(BINS);
+    const b = new Float32Array(BINS);
+    const total = SIZE * SIZE;
+    for (let i = 0; i < total; i++) {
+      r[Math.floor(data[i * 4]     / (256 / BINS))]++;
+      g[Math.floor(data[i * 4 + 1] / (256 / BINS))]++;
+      b[Math.floor(data[i * 4 + 2] / (256 / BINS))]++;
+    }
+    // Normalise
+    for (let i = 0; i < BINS; i++) { r[i] /= total; g[i] /= total; b[i] /= total; }
+    return { r, g, b };
+  } catch { return null; }
+};
+
+// Bhattacharyya coefficient — 1.0 = identical, 0.0 = completely different
+const histogramSimilarity = (h1, h2) => {
+  if (!h1 || !h2) return 0;
+  const BINS = h1.r.length;
+  let bc = 0;
+  for (let i = 0; i < BINS; i++)
+    bc += Math.sqrt(h1.r[i] * h2.r[i]) + Math.sqrt(h1.g[i] * h2.g[i]) + Math.sqrt(h1.b[i] * h2.b[i]);
+  return Math.round((bc / 3) * 100); // 0–100
 };
 
 // ─── SHA-256 ──────────────────────────────────────────────────────────────────
@@ -102,7 +191,7 @@ const runPixelDiff = async (origSrc, uploadedCanvas) => {
 
         const diff = (Math.abs(oR - uR) + Math.abs(oG - uG) + Math.abs(oB - uB)) / 3;
         totalDiff += diff;
-        if (diff > 25) changedPixels++;
+        if (diff > 15) changedPixels++; // ✅ lowered from 25 → 15 for better sensitivity
 
         const gx = Math.min(Math.floor(x / cellW), GRID - 1);
         const gy = Math.min(Math.floor(y / cellH), GRID - 1);
@@ -619,10 +708,24 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
     pixelAnalysis = await runPixelDiff(thumbSrc, uploadedCanvas);
   }
 
-  // ── pHash ───────────────────────────────────────────────────────────────────
+  // ── pHash with rotation detection ──────────────────────────────────────────
   const uploadedPHash = computePerceptualHashFromCanvas(uploadedCanvas);
-  const origPHash = originalAsset.visualFingerprint;
-  const pSim = pHashSimilarity(uploadedPHash, origPHash);
+  const origPHash     = originalAsset.visualFingerprint || null;
+
+  // Try all 4 rotations — picks best match (detects rotated copies)
+  const { sim: pSim, rotation: detectedRotation } = pHashSimWithRotation(uploadedCanvas, origPHash);
+
+  // ── Colour histogram comparison ─────────────────────────────────────────────
+  let histSim = null;
+  if (originalAsset.thumbnail || originalAsset.thumbnailUrl || originalAsset.cloudinary_url) {
+    try {
+      const thumbSrc = originalAsset.thumbnail || originalAsset.thumbnailUrl || originalAsset.cloudinary_url;
+      const origThumbCanvas = await loadImageToCanvas(thumbSrc);
+      const h1 = computeColorHistogram(origThumbCanvas);
+      const h2 = computeColorHistogram(uploadedCanvas);
+      histSim  = histogramSimilarity(h1, h2);
+    } catch { histSim = null; }
+  }
 
   // ── 1. Resolution ───────────────────────────────────────────────────────────
   const widthDiff  = Math.abs(uploadedW - origW);
@@ -705,17 +808,41 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
   // ── 6. pHash overall verdict ────────────────────────────────────────────────
   let visualVerdict = '';
   if (origPHash && uploadedPHash) {
-    if (pSim < 50) {
+    // Report rotation if detected via best-match rotation
+    if (detectedRotation !== 0) {
+      changes.push({ type: 'warning', category: 'Rotation', text: `Image rotated ${detectedRotation}° — best pHash match found at ${detectedRotation}° rotation (similarity: ${pSim}%)` });
+    }
+
+    if (pSim < 40) {
+      changes.push({ type: 'danger', category: 'Visual', text: `Completely different image — perceptual similarity only ${pSim}% (likely unrelated content)` });
+      visualVerdict = 'Completely Different';
+    } else if (pSim < 60) {
       changes.push({ type: 'danger', category: 'Visual', text: `High visual divergence — perceptual similarity only ${pSim}%` });
       visualVerdict = 'Heavily Modified';
     } else if (pSim < 75) {
       changes.push({ type: 'warning', category: 'Visual', text: `Significant visual changes — perceptual similarity ${pSim}%` });
       visualVerdict = 'Moderately Modified';
-    } else if (pSim < 88) {
+    } else if (pSim < 90) {
       changes.push({ type: 'warning', category: 'Visual', text: `Noticeable visual changes — perceptual similarity ${pSim}%` });
       visualVerdict = 'Lightly Modified';
     } else {
       visualVerdict = pSim === 100 ? 'Exact Match' : 'Near-Identical';
+    }
+  } else if (!origPHash) {
+    // No stored pHash — rely on histogram and pixel diff only
+    if (histSim !== null && histSim < 40) {
+      changes.push({ type: 'danger', category: 'Visual', text: `Very different colour profile — histogram similarity only ${histSim}% (likely different image)` });
+      visualVerdict = 'Likely Different';
+    }
+  }
+
+  // ── Colour histogram verdict (secondary signal) ─────────────────────────────
+  if (histSim !== null && origPHash) {
+    if (histSim < 40 && pSim < 60) {
+      // Both signals agree it's a different image — strong evidence
+      changes.push({ type: 'danger', category: 'Colour Profile', text: `Colour histogram very different — ${histSim}% similarity (confirms different image content)` });
+    } else if (histSim < 60 && pSim < 75) {
+      changes.push({ type: 'warning', category: 'Colour Profile', text: `Colour profile changed significantly — histogram similarity ${histSim}%` });
     }
   }
 
@@ -727,20 +854,45 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
   const isTampered = changes.some(c => c.type === 'danger' || c.type === 'warning');
 
   // Only expose the modified file time when tampering was actually found
-  // — on a clean/original upload it's just OS metadata and misleads the user
   const modifiedFileTime = isTampered ? rawModifiedFileTime : null;
 
-  // Confidence: always start from pHash similarity as the base (most reliable)
-  // Then apply penalties for structural changes and pixel diff
-  let confidence = pSim || 85;
-  if (pixelAnalysis) {
-    // Only penalise if a meaningful % of pixels changed significantly (threshold already at >25)
-    const pixelPenalty = Math.min(30, pixelAnalysis.changedPct * 0.5);
-    confidence = Math.round(Math.max(0, confidence - pixelPenalty));
+  // ── Confidence: multi-signal weighted score ─────────────────────────────────
+  // Priority: pHash (most reliable) > histogram > pixel diff > structural checks
+  let confidence;
+
+  if (origPHash && uploadedPHash) {
+    // We have a stored pHash — use it as the primary signal (weight 60%)
+    confidence = pSim;
+
+    // Blend in histogram if available (weight 25%)
+    if (histSim !== null) {
+      confidence = Math.round(confidence * 0.70 + histSim * 0.30);
+    }
+
+    // Apply pixel penalty only if pixel diff confirms changes
+    if (pixelAnalysis) {
+      const pixelPenalty = Math.min(20, pixelAnalysis.changedPct * 0.4);
+      confidence = Math.round(Math.max(0, confidence - pixelPenalty));
+    }
+  } else if (histSim !== null) {
+    // No stored pHash — use histogram as primary signal
+    confidence = histSim;
+    if (pixelAnalysis) {
+      const pixelPenalty = Math.min(20, pixelAnalysis.changedPct * 0.4);
+      confidence = Math.round(Math.max(0, confidence - pixelPenalty));
+    }
+  } else if (pixelAnalysis) {
+    // Only pixel diff available
+    confidence = pixelAnalysis.pixelSimilarity;
+  } else {
+    // Nothing to compare — show 0, not a fake 85
+    confidence = 0;
   }
+
   if (resChanged)                                              confidence -= 15;
   if (changes.some(c => c.category === 'Cropping'))           confidence -= 20;
   if (changes.some(c => c.category === 'Compression'))        confidence -= 10;
+  if (changes.some(c => c.category === 'Rotation'))           confidence -= 5;
   confidence = Math.max(0, Math.min(100, confidence));
 
   return {
@@ -749,6 +901,8 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
     visualVerdict,
     confidence,
     pHashSim: pSim,
+    histSim,
+    detectedRotation,
     pixelAnalysis,
     editingTool,
     originalCaptureTime,

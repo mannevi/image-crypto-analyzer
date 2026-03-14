@@ -797,7 +797,7 @@ const generateAssetId = (imageData) => {
 // ============================================
 
 const STEGO_TILE     = 12;
-const UUID_FIELD_LEN = 36;
+const UUID_FIELD_LEN = 32;
 const PAYLOAD_BYTES  = 1 + UUID_FIELD_LEN + 2; // 35 bytes
 const PAYLOAD_BITS   = PAYLOAD_BYTES * 8;       // 280 bits
 
@@ -1555,6 +1555,15 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     };
   }, [encryptedImage]);
 
+  // Keep userId display state synced with the locked per-user UUID from localStorage.
+  // Runs on mount (catches late login writes) and whenever the `user` prop changes.
+  useEffect(() => {
+    const stored = localStorage.getItem('userUUID') || '';
+    if (stored && stored !== userId) {
+      setUserId(stored);
+    }
+  }, [user]); // re-run if user prop changes (e.g. after login redirect)
+
   // ✅ NOW the safety check - AFTER all hooks
   useEffect(() => {
     if (!user) {
@@ -1818,9 +1827,10 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       // [UPDATED] Pass canvas.width and canvas.height for V3 resolution embedding
+      // Use currentUUID (not userId state) — React setState is async and may be stale here
       const encryptedData = embedUUIDAdvanced(
         imageData,
-        userId,
+        currentUUID,
         { available: gpsData.available, latitude: gpsData.latitude, longitude: gpsData.longitude },
         deviceInfo,
         ipInfo.ip,
@@ -1849,7 +1859,7 @@ canvas.toBlob((blob) => {
         // ── Compute vault security data ─────────────────────────────────────
         const perceptualHash = computePerceptualHash(canvas);
         const blockchainAnchor = generateBlockchainAnchor(sha256Hash, now.getTime());
-        const certId = generateAuthorshipCertificateId(userId, deviceInfo.deviceId);
+        const certId = generateAuthorshipCertificateId(currentUUID, deviceInfo.deviceId);
 
         // ── Save to vault database IMMEDIATELY after encryption ─────────────
         const reader = new FileReader();
@@ -1860,8 +1870,8 @@ canvas.toBlob((blob) => {
           import('../api/client').then(({ vaultAPI }) => {
             const vaultPayload = {
   asset_id:           assetId,
-  owner_name:         user?.name || user?.email || user?.username || userId,  // ← Shows registered username/name
-  user_id:            userId,  // ← Shows the UUID entered during encryption
+  owner_name:         user?.name || user?.email || user?.username || currentUUID,  // ← Shows registered username/name
+  user_id:            currentUUID,  // ← The locked UUID for this user
   file_name:          filename,
   file_size:          `${(blob.size / 1024).toFixed(2)} KB`,
   thumbnail_base64:   thumbnail,
@@ -1894,7 +1904,7 @@ canvas.toBlob((blob) => {
 
         // ── Update forensicsStats via helper ────────────────────────────────
         updateForensicsStats('encrypted', {
-          userId: userId,
+          userId: currentUUID,
           fileName: selectedFile ? selectedFile.name : filename
         });
 
@@ -1911,10 +1921,6 @@ canvas.toBlob((blob) => {
     };
     img.src = preview;
   };
-
-  // Rotate canvas by specified degrees (90, 180, 270)
-
-        
 
   // Rotate canvas by specified degrees (90, 180, 270)
   const rotateCanvas = (sourceCanvas, degrees) => {
