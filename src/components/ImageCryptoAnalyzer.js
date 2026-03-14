@@ -797,9 +797,9 @@ const generateAssetId = (imageData) => {
 // ============================================
 
 const STEGO_TILE     = 12;
-const UUID_FIELD_LEN = 36; // standard UUID v4 is always 36 chars (32 hex + 4 hyphens)
-const PAYLOAD_BYTES  = 1 + UUID_FIELD_LEN + 2; // 39 bytes
-const PAYLOAD_BITS   = PAYLOAD_BYTES * 8;       // 312 bits
+const UUID_FIELD_LEN = 32;           // 32 hex chars (hyphens stripped on embed, restored on extract)
+const PAYLOAD_BYTES  = 1 + UUID_FIELD_LEN + 2; // 35 bytes
+const PAYLOAD_BITS   = PAYLOAD_BYTES * 8;       // 280 bits — CRC lives at bits 272-287, within 25x25 tile range (0-287)
 
 const crc16js = (bytes) => {
   let crc = 0xFFFF;
