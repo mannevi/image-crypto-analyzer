@@ -2191,16 +2191,6 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
         fileName: selectedFile.name
       });
 
-      // [NEW] Save to vault if image has a verified UUID
-      if (uuidResult.found) {
-        saveToVault(
-          preview,
-          selectedFile.name,
-          uuidResult.userId,
-          (selectedFile.size / 1024).toFixed(2) + ' KB',
-          null
-        );
-      }
 
       // [NEW] Generate and save comprehensive certificate
       saveCertificate(report, preview);

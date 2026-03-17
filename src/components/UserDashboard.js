@@ -24,6 +24,10 @@ function UserDashboard({ user, onLogout }) {
   const [selectedCert,   setSelectedCert]   = useState(null);
   const [showCertModal,  setShowCertModal]  = useState(false);
   const [copiedId,       setCopiedId]       = useState(null);
+  const [searchQuery,    setSearchQuery]    = useState('');
+  const [searchCertQuery, setSearchCertQuery] = useState('');
+  const [selectedVaultItems, setSelectedVaultItems] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   // ── Load data from API ─────────────────────────────────────────────────────
   const loadVaultImages = useCallback(async () => {
@@ -36,7 +40,8 @@ function UserDashboard({ user, onLogout }) {
         assetId:      a.asset_id    || a.id,
         fileName:     a.file_name   || 'Unknown',
         fileSize:     a.file_size   || '—',
-        userId:       a.owner_name  || '—',
+        ownerName:    a.owner_name  || a.owner_email || a.user_id || '—',
+        ownerEmail:   a.owner_email || '—',
         dateEncrypted: a.created_at,
         status:       'Verified',
         thumbnail:    a.thumbnail_url,
@@ -62,11 +67,14 @@ function UserDashboard({ user, onLogout }) {
   }, []);
 
   const loadReports = useCallback(async () => {
+    setLoadingHistory(true);
     try {
       const res = await compareAPI.getHistory();
       setReports(res.reports || []);
     } catch (err) {
       console.error('Failed to load reports:', err.message);
+    } finally {
+      setLoadingHistory(false);
     }
   }, []);
 
@@ -106,7 +114,7 @@ function UserDashboard({ user, onLogout }) {
     setTimeout(() => {
       setVerificationResult({
         verified:    image.status === 'Verified',
-        userId:      image.userId,
+        userId:      image.ownerName,
         deviceId:    image.device_id || 'Unknown',
         gpsLocation: image.gps_location || 'Not Available',
         timestamp:   image.dateEncrypted,
@@ -134,7 +142,43 @@ function UserDashboard({ user, onLogout }) {
     try {
       await vaultAPI.delete(imageId);
       setVaultImages(prev => prev.filter(img => img.id !== imageId && img.assetId !== imageId));
+      setSelectedVaultItems(prev => prev.filter(id => id !== imageId));
       alert('Image deleted successfully');
+    } catch (err) {
+      alert('Failed to delete: ' + err.message);
+    }
+  };
+
+  // Vault selection handlers
+  const handleSelectVaultItem = (imageId) => {
+    setSelectedVaultItems(prev => 
+      prev.includes(imageId) 
+        ? prev.filter(id => id !== imageId)
+        : [...prev, imageId]
+    );
+  };
+
+  const handleSelectAllVault = (filteredImages) => {
+    if (selectedVaultItems.length === filteredImages.length) {
+      setSelectedVaultItems([]);
+    } else {
+      setSelectedVaultItems(filteredImages.map(img => img.id || img.assetId));
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedVaultItems.length === 0) {
+      alert('No items selected');
+      return;
+    }
+    
+    if (!window.confirm(`Delete ${selectedVaultItems.length} selected image(s) from vault?`)) return;
+    
+    try {
+      await Promise.all(selectedVaultItems.map(id => vaultAPI.delete(id)));
+      setVaultImages(prev => prev.filter(img => !selectedVaultItems.includes(img.id) && !selectedVaultItems.includes(img.assetId)));
+      setSelectedVaultItems([]);
+      alert(`${selectedVaultItems.length} image(s) deleted successfully`);
     } catch (err) {
       alert('Failed to delete: ' + err.message);
     }
@@ -162,17 +206,40 @@ function UserDashboard({ user, onLogout }) {
   };
 
   const handleShareCert = (cert) => {
-    const text = `Certificate ID: ${cert.certificate_id}\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}\n\n🔐 This image is protected with PINIT invisible watermarking.\nEven after compression or sharing, ownership data is embedded in the image pixels.\nVerify at: ${window.location.origin}/public/verify`;
+    // Create SHORT link with only essential data
+    const essentialData = {
+      certificate_id: cert.certificate_id,
+      asset_id: cert.asset_id,
+      confidence: cert.confidence,
+      status: cert.status,
+      created_at: cert.created_at
+    };
+    
+    // Encode only essential data (much shorter URL!)
+    const encodedData = btoa(JSON.stringify(essentialData));
+    
+    // Use deployed URL (not localhost!)
+    const baseUrl = window.location.origin.includes('localhost') 
+      ? 'https://your-app.vercel.app'  // ← Replace with your actual Vercel URL!
+      : window.location.origin;
+    
+    const verifyUrl = `${baseUrl}/public/verify?data=${encodedData}`;
+    
+    const text = `PINIT Ownership Certificate\n\nCertificate ID: ${cert.certificate_id}\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}\n\n🔐 This image is protected with PINIT invisible watermarking.\nEven after compression or sharing, ownership data is embedded in the image pixels.\n\nVerify at: ${verifyUrl}`;
+    
     if (navigator.share) {
-      navigator.share({ title: 'PINIT Ownership Certificate', text }).then(() => {
-        // Show watermark survival info after share
+      navigator.share({ 
+        title: 'PINIT Ownership Certificate', 
+        text: text,
+        url: verifyUrl
+      }).then(() => {
         setTimeout(() => {
-          alert('✅ Shared successfully!\n\n🔐 Watermark Status:\n• PNG format: 100% watermark preserved\n• WhatsApp/Email: watermark survives at 85%+ quality\n• Heavy filters or crops below 25px may damage watermark\n\nAnyone receiving this image can verify ownership at:\n' + window.location.origin + '/public/verify');
+          alert(`✅ Shared successfully!\n\n📱 Link works on ANY device!\n🔗 Short link length: ${verifyUrl.length} characters\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality\n• Filters or crops < 25px may damage watermark`);
         }, 500);
       }).catch(() => {});
     } else {
-      navigator.clipboard.writeText(text).then(() => {
-        alert('✅ Copied to clipboard!\n\n🔐 Watermark Status:\n• PNG format: 100% watermark preserved\n• WhatsApp/Email: watermark survives at 85%+ quality\n• Heavy filters or crops below 25px may damage watermark\n\nAnyone can verify ownership at:\n' + window.location.origin + '/public/verify');
+      navigator.clipboard.writeText(verifyUrl).then(() => {
+        alert(`✅ Verification link copied!\n\n📱 Works on any device: mobile, tablet, laptop!\n🔗 Link length: ${verifyUrl.length} characters\n\n${verifyUrl}\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality`);
       });
     }
   };
@@ -305,64 +372,48 @@ function UserDashboard({ user, onLogout }) {
                   <h1>Image Vault</h1>
                   <p className="subtitle">Your encrypted images stored securely</p>
                 </div>
-                <button onClick={loadVaultImages} className="btn-empty-action" style={{ background: '#667eea' }}>
-                  ↻ Refresh
-                </button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  {selectedVaultItems.length > 0 && (
+                    <button 
+                      onClick={handleDeleteSelected} 
+                      className="btn-empty-action" 
+                      style={{ background: '#ef4444', color: 'white' }}
+                    >
+                      <Trash2 size={16} /> Delete Selected ({selectedVaultItems.length})
+                    </button>
+                  )}
+                  <button onClick={loadVaultImages} className="btn-empty-action" style={{ background: '#667eea' }}>
+                    ↻ Refresh
+                  </button>
+                </div>
               </div>
+
+              {/* Search Bar */}
+              {!loadingVault && vaultImages.length > 0 && (
+                <div style={{ marginBottom: '20px' }}>
+                  <input
+                    type="text"
+                    placeholder="🔍 Search by file name, owner, email, or asset ID..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px 16px',
+                      fontSize: '14px',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      outline: 'none',
+                      transition: 'border-color 0.2s',
+                    }}
+                    onFocus={(e) => e.target.style.borderColor = '#667eea'}
+                    onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                  />
+                </div>
+              )}
 
               {loadingVault ? (
                 <div className="empty-state"><p>Loading vault...</p></div>
-              ) : vaultImages.length > 0 ? (
-                <div className="vault-table-container">
-                  <table className="vault-table">
-                    <thead>
-                      <tr>
-                        <th>Thumbnail</th><th>File Name</th><th>Date Encrypted</th>
-                        <th>Owner</th><th>Status</th><th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {vaultImages.map((image, idx) => (
-                        <tr key={image.id || idx}>
-                          <td>
-                            <div className="thumbnail">
-                              {image.thumbnail
-                                ? <img src={image.thumbnail} alt={image.fileName} />
-                                : <div className="thumbnail-placeholder"><Image size={24} /></div>}
-                            </div>
-                          </td>
-                          <td>
-                            <div className="file-name-cell">
-                              <span className="file-name">{image.fileName}</span>
-                              <span className="file-size">{image.fileSize}</span>
-                            </div>
-                          </td>
-                          <td>{formatDate(image.dateEncrypted)}</td>
-                          <td><code className="uuid-code">{image.userId}</code></td>
-                          <td>
-                            <span className="status-badge verified">
-                              <CheckCircle size={14} /> Verified
-                            </span>
-                          </td>
-                          <td>
-                            <div className="action-buttons">
-                              <button onClick={() => handleView(image)} className="btn-action btn-view" title="View">
-                                <Eye size={16} />
-                              </button>
-                              <button onClick={() => handleDownload(image)} className="btn-action btn-download" title="Download">
-                                <Download size={16} />
-                              </button>
-                              <button onClick={() => handleDelete(image.id || image.assetId)} className="btn-action btn-delete" title="Delete">
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
+              ) : vaultImages.length === 0 ? (
                 <div className="empty-state">
                   <p>🗄️</p><p>Your vault is empty</p>
                   <p className="subtitle">Encrypt images in the Analyzer to see them here</p>
@@ -370,7 +421,163 @@ function UserDashboard({ user, onLogout }) {
                     <FileSearch size={18} /> Go to Analyzer
                   </button>
                 </div>
-              )}
+              ) : (() => {
+                // Filter vault images based on search query
+                const filteredImages = vaultImages.filter(image => {
+                  if (!searchQuery) return true;
+                  const query = searchQuery.toLowerCase();
+                  return (
+                    image.fileName?.toLowerCase().includes(query) ||
+                    image.ownerName?.toLowerCase().includes(query) ||
+                    image.ownerEmail?.toLowerCase().includes(query) ||
+                    image.assetId?.toLowerCase().includes(query)
+                  );
+                });
+
+                if (filteredImages.length === 0) {
+                  return (
+                    <div className="empty-state">
+                      <p>🔍</p>
+                      <p>No results found</p>
+                      <p className="subtitle">Try a different search term</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="vault-table-container">
+                    <table className="vault-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: '40px' }}>
+                            <input 
+                              type="checkbox" 
+                              checked={selectedVaultItems.length === filteredImages.length && filteredImages.length > 0}
+                              onChange={() => handleSelectAllVault(filteredImages)}
+                              style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                            />
+                          </th>
+                          <th>Thumbnail</th><th>File Name</th><th>Date Encrypted</th>
+                          <th>Owner</th><th>Status</th><th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredImages.map((image, idx) => {
+                          const imageId = image.id || image.assetId;
+                          const isSelected = selectedVaultItems.includes(imageId);
+                          
+                          return (
+                          <tr key={imageId || idx} style={{ backgroundColor: isSelected ? 'rgba(102, 126, 234, 0.05)' : 'transparent' }}>
+                            <td>
+                              <input 
+                                type="checkbox" 
+                                checked={isSelected}
+                                onChange={() => handleSelectVaultItem(imageId)}
+                                style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                              />
+                            </td>
+                            <td>
+                              <div className="thumbnail">
+                                {image.thumbnail
+                                  ? <img src={image.thumbnail} alt={image.fileName} />
+                                  : <div className="thumbnail-placeholder"><Image size={24} /></div>}
+                              </div>
+                            </td>
+                            <td>
+                              <div className="file-name-cell">
+                                <span className="file-name">{image.fileName}</span>
+                                <span className="file-size">{image.fileSize}</span>
+                              </div>
+                            </td>
+                            <td>{formatDate(image.dateEncrypted)}</td>
+                            <td>
+                              <div className="owner-cell">
+                                <span className="owner-name">{image.ownerName}</span>
+                                {image.ownerEmail && image.ownerEmail !== '—' && image.ownerEmail !== image.ownerName && (
+                                  <span className="owner-email" style={{ display: 'block', fontSize: '0.85em', color: '#6b7280', marginTop: '2px' }}>{image.ownerEmail}</span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <span className="status-badge verified">
+                                <CheckCircle size={14} /> Verified
+                              </span>
+                            </td>
+                            <td>
+                              <div className="action-buttons">
+                                <button 
+                                  onClick={() => handleView(image)} 
+                                  className="btn-action btn-view" 
+                                  title="View"
+                                  style={{
+                                    background: '#3b82f6',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '8px 12px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'background 0.2s',
+                                  }}
+                                  onMouseOver={(e) => e.currentTarget.style.background = '#2563eb'}
+                                  onMouseOut={(e) => e.currentTarget.style.background = '#3b82f6'}
+                                >
+                                  <Eye size={16} />
+                                </button>
+                                <button 
+                                  onClick={() => handleDownload(image)} 
+                                  className="btn-action btn-download" 
+                                  title="Download"
+                                  style={{
+                                    background: '#10b981',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '8px 12px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'background 0.2s',
+                                  }}
+                                  onMouseOver={(e) => e.currentTarget.style.background = '#059669'}
+                                  onMouseOut={(e) => e.currentTarget.style.background = '#10b981'}
+                                >
+                                  <Download size={16} />
+                                </button>
+                                <button 
+                                  onClick={() => handleDelete(image.id || image.assetId)} 
+                                  className="btn-action btn-delete" 
+                                  title="Delete"
+                                  style={{
+                                    background: '#ef4444',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '8px 12px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'background 0.2s',
+                                  }}
+                                  onMouseOver={(e) => e.currentTarget.style.background = '#dc2626'}
+                                  onMouseOut={(e) => e.currentTarget.style.background = '#ef4444'}
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -387,58 +594,32 @@ function UserDashboard({ user, onLogout }) {
                 </button>
               </div>
 
+              {/* Search Bar */}
+              {!loadingCerts && certificates.length > 0 && (
+                <div style={{ marginBottom: '20px' }}>
+                  <input
+                    type="text"
+                    placeholder="🔍 Search by certificate ID, asset ID, or status..."
+                    value={searchCertQuery}
+                    onChange={(e) => setSearchCertQuery(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px 16px',
+                      fontSize: '14px',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      outline: 'none',
+                      transition: 'border-color 0.2s',
+                    }}
+                    onFocus={(e) => e.target.style.borderColor = '#667eea'}
+                    onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                  />
+                </div>
+              )}
+
               {loadingCerts ? (
                 <div className="empty-state"><p>Loading certificates...</p></div>
-              ) : certificates.length > 0 ? (
-                <div className="certificates-grid">
-                  {certificates.map((cert) => {
-                    const data = cert.analysis_data || {};
-                    return (
-                      <div key={cert.id} className="certificate-card">
-                        <div className="certificate-header">
-                          <div className="certificate-badge"><Award size={24} /></div>
-                          <div className={`certificate-status ${cert.confidence >= 90 ? 'high' : cert.confidence >= 70 ? 'medium' : 'low'}`}>
-                            {cert.confidence}% Confidence
-                          </div>
-                        </div>
-                        <div className="certificate-body">
-                          <h3>{cert.status}</h3>
-                          <div className="certificate-info">
-                            <div className="info-row">
-                              <span className="info-label">Certificate ID:</span>
-                              <div className="info-value-with-copy">
-                                <code>{cert.certificate_id?.slice(0,16)}...</code>
-                                <button onClick={() => handleCopyId(cert.certificate_id)} className="btn-copy-small">
-                                  {copiedId === cert.certificate_id ? <CheckCircle size={14} /> : <Copy size={14} />}
-                                </button>
-                              </div>
-                            </div>
-                            <div className="info-row">
-                              <span className="info-label">Asset ID:</span>
-                              <code className="info-value">{cert.asset_id}</code>
-                            </div>
-                            <div className="info-row">
-                              <span className="info-label">Date Created:</span>
-                              <span className="info-value">{formatDate(cert.created_at)}</span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="certificate-actions">
-                          <button onClick={() => handleViewCert(cert)} className="btn-cert-action btn-cert-view">
-                            <Eye size={16} /> View
-                          </button>
-                          <button onClick={() => handleShareCert(cert)} className="btn-cert-action btn-cert-share">
-                            <Share2 size={16} /> Share
-                          </button>
-                          <button onClick={() => handleDeleteCert(cert.certificate_id || cert.id)} className="btn-cert-action btn-cert-delete">
-                            <Trash2 size={16} /> Delete
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
+              ) : certificates.length === 0 ? (
                 <div className="empty-state">
                   <p>📜</p><p>No certificates yet</p>
                   <p className="subtitle">Analyze images to generate ownership certificates</p>
@@ -446,7 +627,79 @@ function UserDashboard({ user, onLogout }) {
                     <FileSearch size={18} /> Go to Analyzer
                   </button>
                 </div>
-              )}
+              ) : (() => {
+                // Filter certificates based on search query
+                const filteredCerts = certificates.filter(cert => {
+                  if (!searchCertQuery) return true;
+                  const query = searchCertQuery.toLowerCase();
+                  return (
+                    cert.certificate_id?.toLowerCase().includes(query) ||
+                    cert.asset_id?.toLowerCase().includes(query) ||
+                    cert.status?.toLowerCase().includes(query)
+                  );
+                });
+
+                if (filteredCerts.length === 0) {
+                  return (
+                    <div className="empty-state">
+                      <p>🔍</p>
+                      <p>No results found</p>
+                      <p className="subtitle">Try a different search term</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="certificates-grid">
+                    {filteredCerts.map((cert) => {
+                      const data = cert.analysis_data || {};
+                      return (
+                        <div key={cert.id} className="certificate-card">
+                          <div className="certificate-header">
+                            <div className="certificate-badge"><Award size={24} /></div>
+                            <div className={`certificate-status ${cert.confidence >= 90 ? 'high' : cert.confidence >= 70 ? 'medium' : 'low'}`}>
+                              {cert.confidence}% Confidence
+                            </div>
+                          </div>
+                          <div className="certificate-body">
+                            <h3>{cert.status}</h3>
+                            <div className="certificate-info">
+                              <div className="info-row">
+                                <span className="info-label">Certificate ID:</span>
+                                <div className="info-value-with-copy">
+                                  <code>{cert.certificate_id?.slice(0,16)}...</code>
+                                  <button onClick={() => handleCopyId(cert.certificate_id)} className="btn-copy-small">
+                                    {copiedId === cert.certificate_id ? <CheckCircle size={14} /> : <Copy size={14} />}
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="info-row">
+                                <span className="info-label">Asset ID:</span>
+                                <code className="info-value">{cert.asset_id}</code>
+                              </div>
+                              <div className="info-row">
+                                <span className="info-label">Date Created:</span>
+                                <span className="info-value">{formatDate(cert.created_at)}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="certificate-actions">
+                            <button onClick={() => handleViewCert(cert)} className="btn-cert-action btn-cert-view">
+                              <Eye size={16} /> View
+                            </button>
+                            <button onClick={() => handleShareCert(cert)} className="btn-cert-action btn-cert-share">
+                              <Share2 size={16} /> Share
+                            </button>
+                            <button onClick={() => handleDeleteCert(cert.certificate_id || cert.id)} className="btn-cert-action btn-cert-delete">
+                              <Trash2 size={16} /> Delete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -458,12 +711,19 @@ function UserDashboard({ user, onLogout }) {
                   <h1>Activity History</h1>
                   <p className="subtitle">All your analysis reports</p>
                 </div>
-                <button onClick={loadReports} className="btn-empty-action" style={{ background: '#667eea' }}>
-                  ↻ Refresh
+                <button 
+                  onClick={loadReports} 
+                  className="btn-empty-action" 
+                  style={{ background: '#667eea' }}
+                  disabled={loadingHistory}
+                >
+                  {loadingHistory ? '⟳ Loading...' : '↻ Refresh'}
                 </button>
               </div>
 
-              {reports.length > 0 ? (
+              {loadingHistory ? (
+                <div className="empty-state"><p>Loading history...</p></div>
+              ) : reports.length > 0 ? (
                 <div className="history-table-container">
                   <table className="history-table">
                     <thead>
@@ -652,7 +912,7 @@ function UserDashboard({ user, onLogout }) {
                   ['File Name',      selectedImage.fileName],
                   ['File Size',      selectedImage.fileSize],
                   ['Date Encrypted', formatDate(selectedImage.dateEncrypted)],
-                  ['Owner',          selectedImage.userId],
+                  ['Owner',          selectedImage.ownerName],
                 ].map(([label, value]) => (
                   <div key={label} className="detail-row">
                     <span className="detail-label">{label}:</span>

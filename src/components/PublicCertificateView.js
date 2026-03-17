@@ -23,12 +23,27 @@ function PublicCertificateView() {
     const encodedData = urlParams.get('data');
     
     if (encodedData) {
-      // Decode certificate data from URL
+      // Decode certificate data from URL (simple base64 → JSON)
       try {
-        const certData = decodeURIComponent(escape(atob(encodedData)));
-        const cert = JSON.parse(certData);
+        const decodedString = atob(encodedData);
+        const cert = JSON.parse(decodedString);
         console.log('Certificate loaded from URL:', cert);
-        setCertificate(cert);
+        
+        // Normalize field names (handle both snake_case and camelCase)
+        const normalizedCert = {
+          certificateId: cert.certificate_id || cert.certificateId,
+          assetId: cert.asset_id || cert.assetId,
+          userId: cert.user_id || cert.userId,
+          dateCreated: cert.created_at || cert.dateCreated,
+          status: cert.status,
+          confidence: cert.confidence,
+          ownershipAtCreation: cert.ownershipAtCreation,
+          technicalDetails: cert.technicalDetails,
+          imagePreview: cert.image_preview || cert.imagePreview,
+          analysis_data: cert.analysis_data
+        };
+        
+        setCertificate(normalizedCert);
         setLoading(false);
         return;
       } catch (decodeErr) {
