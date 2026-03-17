@@ -206,40 +206,68 @@ function UserDashboard({ user, onLogout }) {
   };
 
   const handleShareCert = (cert) => {
-    // Create SHORT link with only essential data
-    const essentialData = {
+    // Create comprehensive data with FULL report
+    const comprehensiveData = {
       certificate_id: cert.certificate_id,
       asset_id: cert.asset_id,
       confidence: cert.confidence,
       status: cert.status,
-      created_at: cert.created_at
+      created_at: cert.created_at,
+      // Include FULL analysis data/report
+      analysis_data: cert.analysis_data,
+      report_id: cert.analysis_data?.reportId,
+      user_name: cert.analysis_data?.userName,
+      user_email: cert.analysis_data?.userEmail,
+      device_name: cert.analysis_data?.deviceName,
+      gps_location: cert.analysis_data?.gpsLocation,
+      asset_resolution: cert.analysis_data?.assetResolution,
+      asset_file_size: cert.analysis_data?.assetFileSize,
+      metrics: cert.analysis_data?.metrics
     };
     
-    // Encode only essential data (much shorter URL!)
-    const encodedData = btoa(JSON.stringify(essentialData));
+    // Encode comprehensive data
+    const encodedData = btoa(JSON.stringify(comprehensiveData));
     
-    // Use deployed URL (not localhost!)
-    const baseUrl = window.location.origin.includes('localhost') 
-      ? 'https://your-app.vercel.app'  // ← Replace with your actual Vercel URL!
+    // Use production URL (replace with YOUR actual Vercel production URL!)
+    const baseUrl = window.location.origin.includes('localhost') || window.location.origin.includes('pv7y0j6lj')
+      ? 'https://image-crypto-analyzer.vercel.app'  // ← Replace with YOUR production URL!
       : window.location.origin;
     
     const verifyUrl = `${baseUrl}/public/verify?data=${encodedData}`;
     
-    const text = `PINIT Ownership Certificate\n\nCertificate ID: ${cert.certificate_id}\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}\n\n🔐 This image is protected with PINIT invisible watermarking.\nEven after compression or sharing, ownership data is embedded in the image pixels.\n\nVerify at: ${verifyUrl}`;
+    const text = `🔐 PINIT Image Forensics Certificate & Report
+
+Certificate ID: ${cert.certificate_id}
+Asset ID: ${cert.asset_id}
+Status: ${cert.status}
+Confidence: ${cert.confidence}%
+
+📊 Full Report Includes:
+• Complete analysis metrics
+• Device information
+• GPS location data
+• Ownership verification
+• Technical details
+
+🔗 View Certificate & Report:
+${verifyUrl}
+
+✨ This link contains the complete forensic analysis report with all details.
+Protected with PINIT invisible watermarking technology.`;
     
     if (navigator.share) {
       navigator.share({ 
-        title: 'PINIT Ownership Certificate', 
+        title: 'PINIT Certificate & Forensic Report', 
         text: text,
         url: verifyUrl
       }).then(() => {
         setTimeout(() => {
-          alert(`✅ Shared successfully!\n\n📱 Link works on ANY device!\n🔗 Short link length: ${verifyUrl.length} characters\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality\n• Filters or crops < 25px may damage watermark`);
+          alert(`✅ Certificate & Full Report Shared!\n\n📊 Link includes:\n• Certificate details\n• Complete analysis report\n• All forensic metrics\n• Device & GPS data\n\n📱 Works on any device!\n🔗 Link: ${verifyUrl.length} characters`);
         }, 500);
       }).catch(() => {});
     } else {
       navigator.clipboard.writeText(verifyUrl).then(() => {
-        alert(`✅ Verification link copied!\n\n📱 Works on any device: mobile, tablet, laptop!\n🔗 Link length: ${verifyUrl.length} characters\n\n${verifyUrl}\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality`);
+        alert(`✅ Certificate & Report Link Copied!\n\n📊 This link contains:\n• Certificate details\n• Complete forensic analysis\n• All metrics and data\n\n${verifyUrl}\n\n📱 Share this link to show the full report on any device!`);
       });
     }
   };

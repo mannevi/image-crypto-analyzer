@@ -33,14 +33,31 @@ function PublicCertificateView() {
         const normalizedCert = {
           certificateId: cert.certificate_id || cert.certificateId,
           assetId: cert.asset_id || cert.assetId,
-          userId: cert.user_id || cert.userId,
+          userId: cert.user_id || cert.userId || cert.user_name,
           dateCreated: cert.created_at || cert.dateCreated,
           status: cert.status,
           confidence: cert.confidence,
-          ownershipAtCreation: cert.ownershipAtCreation,
-          technicalDetails: cert.technicalDetails,
-          imagePreview: cert.image_preview || cert.imagePreview,
-          analysis_data: cert.analysis_data
+          analysis_data: cert.analysis_data,
+          // Add full report fields
+          reportId: cert.report_id || cert.analysis_data?.reportId,
+          userName: cert.user_name || cert.analysis_data?.userName,
+          userEmail: cert.user_email || cert.analysis_data?.userEmail,
+          deviceName: cert.device_name || cert.analysis_data?.deviceName,
+          gpsLocation: cert.gps_location || cert.analysis_data?.gpsLocation,
+          assetResolution: cert.asset_resolution || cert.analysis_data?.assetResolution,
+          assetFileSize: cert.asset_file_size || cert.analysis_data?.assetFileSize,
+          metrics: cert.metrics || cert.analysis_data?.metrics,
+          ownershipAtCreation: {
+            assetResolution: cert.asset_resolution || cert.analysis_data?.assetResolution,
+            assetFileSize: cert.asset_file_size || cert.analysis_data?.assetFileSize,
+            timeStamp: cert.created_at || cert.analysis_data?.timestamp,
+            gpsLocation: cert.gps_location?.coordinates || cert.analysis_data?.gpsLocation?.coordinates || 'Not Available'
+          },
+          technicalDetails: {
+            deviceName: cert.device_name || cert.analysis_data?.deviceName || 'Unknown',
+            pixelsVerified: cert.analysis_data?.totalPixels || 'N/A',
+            ownershipInfo: cert.status || 'Verified'
+          }
         };
         
         setCertificate(normalizedCert);
