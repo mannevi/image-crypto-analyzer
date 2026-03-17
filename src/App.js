@@ -90,6 +90,7 @@ function App() {
       <Routes>
 
         {/* Public routes */}
+        {/* Public routes */}
         <Route
           path="/login"
           element={
@@ -107,7 +108,7 @@ function App() {
           }
         />
         <Route path="/public/verify" element={<PublicVerifyPage />} />
-		        <Route path="/certificate/:certificateId" element={<PublicCertificateView />} />  {/* ← ADD THIS */}
+        <Route path="/public/certificate" element={<PublicCertificateView />} />  {/* ← ADD THIS */}
 
 
         {/* User routes */}
