@@ -1551,12 +1551,10 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const [facingMode, setFacingMode] = useState('environment');
   const [canSwitchCamera, setCanSwitchCamera] = useState(false);
 
-  // Cleanup blob URLs on unmount or when new ones are created
+  // No blob URL cleanup needed — encrypted image stored as base64
   useEffect(() => {
     return () => {
-      if (encryptedImage) {
-        URL.revokeObjectURL(encryptedImage);
-      }
+      // cleanup if needed in future
     };
   }, [encryptedImage]);
 
@@ -1759,9 +1757,8 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     // Compute SHA-256 hash of the original file immediately
     const sha256Hash = await computeSHA256(selectedFile);
 
-    // Cleanup previous encrypted image URL
+    // Cleanup previous encrypted image
     if (encryptedImage) {
-      URL.revokeObjectURL(encryptedImage);
       setEncryptedImage(null);
     }
 
@@ -1849,8 +1846,14 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       ctx.putImageData(encryptedData, 0, 0);
 
 canvas.toBlob((blob) => {
-        const encryptedUrl = URL.createObjectURL(blob);
-        setEncryptedImage(encryptedUrl);
+        // ── Store as base64 for Android WebView compatibility ──
+        // Blob URLs (URL.createObjectURL) don't work in Capacitor WebView
+        const reader2 = new FileReader();
+        reader2.onloadend = () => {
+          const base64Url = reader2.result; // data:image/png;base64,...
+          setEncryptedImage(base64Url);
+        };
+        reader2.readAsDataURL(blob);
         setProcessing(false);
 
         // ── Generate asset ID + timestamp filename ──────────────────────────
@@ -2191,6 +2194,16 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
         fileName: selectedFile.name
       });
 
+      // [NEW] Save to vault if image has a verified UUID
+      if (uuidResult.found) {
+        saveToVault(
+          preview,
+          selectedFile.name,
+          uuidResult.userId,
+          (selectedFile.size / 1024).toFixed(2) + ' KB',
+          null
+        );
+      }
 
       // [NEW] Generate and save comprehensive certificate
       saveCertificate(report, preview);
@@ -2379,14 +2392,51 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
                         <div>
                           <h3 className="font-semibold mb-2 text-gray-700">Encrypted Image</h3>
                           <img src={encryptedImage} alt="Encrypted" className="w-full rounded-lg border" />
-                          <a
-                            href={encryptedImage}
-                            download={encryptedFileName}
+                          <button
+                            onClick={async () => {
+                              try {
+                                // ── Capacitor APK: use Filesystem plugin ──
+                                if (window.Capacitor && window.Capacitor.isNativePlatform()) {
+                                  const { Filesystem, Directory } = await import('@capacitor/filesystem');
+                                  const { Share }      = await import('@capacitor/share');
+                                  // Strip data:image/png;base64, prefix
+                                  const base64Data = encryptedImage.replace(/^data:image\/\w+;base64,/, '');
+                                  const filePath   = encryptedFileName || 'encrypted-image.png';
+                                  // Write to device Documents folder
+                                  const result = await Filesystem.writeFile({
+                                    path      : filePath,
+                                    data      : base64Data,
+                                    directory : Directory.Documents,
+                                    recursive : true
+                                  });
+                                  // Share so user can also save to Gallery
+                                  await Share.share({
+                                    title : 'Encrypted Image',
+                                    text  : 'Your encrypted image with UUID embedded',
+                                    url   : result.uri,
+                                    dialogTitle: 'Save or Share Image'
+                                  });
+                                } else {
+                                  // ── Web browser: standard blob download ──
+                                  const a = document.createElement('a');
+                                  a.href     = encryptedImage;
+                                  a.download = encryptedFileName || 'encrypted-image.png';
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
+                                }
+                              } catch (err) {
+                                console.error('Download error:', err);
+                                // Final fallback — open in new tab so user can long-press save
+                                window.open(encryptedImage, '_blank');
+                              }
+                            }}
                             className="mt-3 block w-full bg-green-600 text-white px-4 py-2 rounded-lg text-center hover:bg-green-700"
+                            style={{border:'none',cursor:'pointer'}}
                           >
                             <Download className="inline mr-2" size={18} />
                             Download Encrypted Image (PNG)
-                          </a>
+                          </button>
 
                           {/* Watermark survival info */}
                           <div style={{marginTop:'10px',padding:'10px 12px',background:'#fffbeb',borderRadius:'8px',border:'1px solid #fcd34d',fontSize:'12px',color:'#92400e',lineHeight:'1.6'}}>
@@ -2426,22 +2476,44 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
 
                               {/* Compress + Download */}
                               <button
-                                onClick={() => {
+                                onClick={async () => {
                                   const img = new Image();
-                                  img.onload = () => {
+                                  img.onload = async () => {
                                     const c = document.createElement('canvas');
                                     c.width = img.width; c.height = img.height;
                                     const ctx = c.getContext('2d');
                                     ctx.drawImage(img, 0, 0);
-                                    // JPEG at 85% quality — watermark in LSB survives
-                                    c.toBlob((blob) => {
-                                      const url = URL.createObjectURL(blob);
-                                      const a = document.createElement('a');
-                                      a.href = url;
-                                      a.download = (encryptedFileName || 'image').replace('.png','-compressed.jpg');
-                                      a.click();
-                                      URL.revokeObjectURL(url);
-                                    }, 'image/jpeg', 0.85);
+                                    const compressedFilename = (encryptedFileName || 'image').replace('.png', '-compressed.jpg');
+
+                                    if (window.Capacitor && window.Capacitor.isNativePlatform()) {
+                                      // APK — use Filesystem + Share
+                                      const base64 = c.toDataURL('image/jpeg', 0.85).replace(/^data:image\/\w+;base64,/, '');
+                                      try {
+                                        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+                                        const { Share }                 = await import('@capacitor/share');
+                                        const result = await Filesystem.writeFile({
+                                          path     : compressedFilename,
+                                          data     : base64,
+                                          directory: Directory.Documents,
+                                          recursive: true
+                                        });
+                                        await Share.share({
+                                          title      : 'Compressed Image',
+                                          url        : result.uri,
+                                          dialogTitle: 'Save or Share'
+                                        });
+                                      } catch (e) { console.error('Compress save error:', e); }
+                                    } else {
+                                      // Web — blob download
+                                      c.toBlob((blob) => {
+                                        const url = URL.createObjectURL(blob);
+                                        const a   = document.createElement('a');
+                                        a.href     = url;
+                                        a.download = compressedFilename;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                      }, 'image/jpeg', 0.85);
+                                    }
                                   };
                                   img.src = encryptedImage;
                                 }}

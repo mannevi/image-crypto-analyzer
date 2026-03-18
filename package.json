@@ -8,6 +8,8 @@
     "@capacitor/camera": "^8.0.2",
     "@capacitor/cli": "^8.2.0",
     "@capacitor/core": "^8.2.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/share": "^8.0.1",
     "@simplewebauthn/browser": "^13.2.2",
     "capacitor-native-biometric": "^4.2.2",
     "lucide-react": "^0.562.0",

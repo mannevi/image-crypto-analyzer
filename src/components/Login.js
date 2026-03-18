@@ -3,7 +3,15 @@ import { Link, useNavigate } from 'react-router-dom';
 import './Login.css';
 
 // ─── Capacitor native biometric (APK only) ───────────────────────────────────
-const isCapacitor = () => !!(window.Capacitor && window.Capacitor.isNativePlatform());
+// NOTE: Check at call time, not at module load — Capacitor loads asynchronously
+const isCapacitor = () => {
+  try {
+    return !!(window.Capacitor && window.Capacitor.isNativePlatform &&
+              window.Capacitor.isNativePlatform());
+  } catch {
+    return false;
+  }
+};
 
 const getNativeBiometric = async () => {
   if (!isCapacitor()) return null;
@@ -48,32 +56,43 @@ function Login({ onLogin }) {
       const enrolled      = localStorage.getItem('biometricEnrolled') === 'true';
       const credentialId  = localStorage.getItem('biometricCredentialId');
 
+      // Small delay to ensure Capacitor bridge is ready
+      await new Promise(r => setTimeout(r, 300));
+
       if (isCapacitor()) {
-        // Native APK
+        // ── Native APK ────────────────────────────────────────────────────
         const NativeBiometric = await getNativeBiometric();
-        if (!NativeBiometric) return;
-        const result = await NativeBiometric.isAvailable();
-        if (result.isAvailable) {
-          setBiometricAvailable(true);
-          setBiometricEnrolled(!!savedToken && !!savedUser);
-          // Auto-trigger if fully set up
-          if (savedToken && savedUser) handleBiometricLogin();
+        if (!NativeBiometric) {
+          console.log('NativeBiometric plugin not found');
+          return;
+        }
+        try {
+          const result = await NativeBiometric.isAvailable();
+          console.log('NativeBiometric isAvailable:', result);
+          if (result.isAvailable) {
+            setBiometricAvailable(true);
+            // Show button always on native — enrolled = has saved session
+            setBiometricEnrolled(!!(savedToken && savedUser));
+            // Auto-trigger only if fully enrolled
+            if (savedToken && savedUser) handleBiometricLogin();
+          }
+        } catch (e) {
+          console.log('NativeBiometric check error:', e);
         }
       } else {
-        // Web browser — WebAuthn
+        // ── Web browser WebAuthn ──────────────────────────────────────────
         if (!window.PublicKeyCredential) return;
         const available = await window.PublicKeyCredential
           .isUserVerifyingPlatformAuthenticatorAvailable();
         if (available) {
           setBiometricAvailable(true);
-          // Enrolled = they registered biometric AND we have their credential ID
           const isEnrolled = enrolled && !!credentialId && !!savedToken && !!savedUser;
           setBiometricEnrolled(isEnrolled);
-          // Auto-trigger biometric if fully set up
           if (isEnrolled) handleBiometricLogin();
         }
       }
-    } catch {
+    } catch (e) {
+      console.log('checkBiometric error:', e);
       setBiometricAvailable(false);
       setBiometricEnrolled(false);
     }
