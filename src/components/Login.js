@@ -3,14 +3,23 @@ import { Link, useNavigate } from 'react-router-dom';
 import './Login.css';
 
 // ─── Capacitor native biometric (APK only) ───────────────────────────────────
-// NOTE: Check at call time, not at module load — Capacitor loads asynchronously
+// Multiple ways to detect Capacitor — check all of them
 const isCapacitor = () => {
   try {
-    return !!(window.Capacitor && window.Capacitor.isNativePlatform &&
-              window.Capacitor.isNativePlatform());
+    if (window.Capacitor && window.Capacitor.isNativePlatform &&
+        window.Capacitor.isNativePlatform()) return true;
+    if (window.Capacitor && window.Capacitor.platform &&
+        window.Capacitor.platform !== 'web') return true;
+    if (window.cordova) return true;
+    return false;
   } catch {
     return false;
   }
+};
+
+// Detect if running on a mobile device (regardless of Capacitor)
+const isMobileDevice = () => {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 };
 
 // @aparajita/capacitor-biometric-auth — supports Capacitor 8
@@ -53,45 +62,75 @@ function Login({ onLogin }) {
   // ── Check if biometric is available AND enrolled on this device ────────────
   const checkBiometric = async () => {
     try {
-      const savedToken    = localStorage.getItem('savedToken');
-      const savedUser     = localStorage.getItem('savedUser');
-      const enrolled      = localStorage.getItem('biometricEnrolled') === 'true';
-      const credentialId  = localStorage.getItem('biometricCredentialId');
+      const savedToken   = localStorage.getItem('savedToken');
+      const savedUser    = localStorage.getItem('savedUser');
+      const enrolled     = localStorage.getItem('biometricEnrolled') === 'true';
+      const credentialId = localStorage.getItem('biometricCredentialId');
 
-      // Small delay to ensure Capacitor bridge is ready
-      await new Promise(r => setTimeout(r, 300));
+      // Delay to ensure Capacitor bridge is fully ready
+      await new Promise(r => setTimeout(r, 800));
 
-      if (isCapacitor()) {
-        // ── Native APK ────────────────────────────────────────────────────
+      const cap     = isCapacitor();
+      const mobile  = isMobileDevice();
+
+      console.log('🔍 checkBiometric — isCapacitor:', cap, '| isMobile:', mobile);
+      console.log('🔍 window.Capacitor:', !!window.Capacitor);
+      console.log('🔍 savedToken:', !!savedToken, '| savedUser:', !!savedUser);
+
+      if (cap) {
+        // ── Native APK via Capacitor ─────────────────────────────────────
         const BiometricAuth = await getBiometricAuth();
+        console.log('🔍 BiometricAuth plugin:', !!BiometricAuth);
+
         if (!BiometricAuth) {
-          console.log('BiometricAuth plugin not found');
+          // Plugin missing — but still on mobile so show button anyway
+          // using WebAuthn as fallback
+          if (mobile) {
+            setBiometricAvailable(true);
+            setBiometricEnrolled(!!(savedToken && savedUser));
+          }
           return;
         }
+
         try {
-          // @aparajita/capacitor-biometric-auth API
           const result = await BiometricAuth.checkBiometry();
-          console.log('BiometricAuth checkBiometry:', result);
+          console.log('🔍 checkBiometry result:', JSON.stringify(result));
+
+          // Show button if biometry available OR if it's just not enrolled yet
+          // (result.isAvailable may be false if no fingerprints enrolled in OS)
           if (result.isAvailable) {
             setBiometricAvailable(true);
-            // On APK: show button always when biometry available
-            // enrolled = user has previously logged in with password
             const hasSession = !!(savedToken && savedUser);
             setBiometricEnrolled(hasSession);
-            // Auto-trigger fingerprint only if they have a saved session
             if (hasSession) handleBiometricLogin();
           } else {
-            // Not available — log reason for debugging
-            console.log('Biometry not available. Reason:', result.reason);
+            console.log('🔍 Biometry unavailable, reason:', result.reason,
+                        '| errorCode:', result.errorCode);
+            // Still show button — let authenticate() give proper error
+            setBiometricAvailable(true);
+            setBiometricEnrolled(false);
           }
         } catch (e) {
-          console.log('BiometricAuth check error:', e);
+          console.log('🔍 checkBiometry threw:', e.message);
+          // Show button anyway on mobile
+          setBiometricAvailable(true);
+          setBiometricEnrolled(!!(savedToken && savedUser));
         }
+
+      } else if (mobile) {
+        // ── Mobile device but Capacitor not detected ─────────────────────
+        // Could be WebView where window.Capacitor not injected yet
+        // Show button and use WebAuthn as fallback
+        console.log('🔍 Mobile detected but Capacitor not found — showing button anyway');
+        setBiometricAvailable(true);
+        setBiometricEnrolled(!!(savedToken && savedUser && enrolled));
+
       } else {
-        // ── Web browser WebAuthn ──────────────────────────────────────────
+        // ── Web browser (desktop/laptop) — use WebAuthn ──────────────────
         if (!window.PublicKeyCredential) return;
         const available = await window.PublicKeyCredential
           .isUserVerifyingPlatformAuthenticatorAvailable();
+        console.log('🔍 WebAuthn available:', available);
         if (available) {
           setBiometricAvailable(true);
           const isEnrolled = enrolled && !!credentialId && !!savedToken && !!savedUser;
@@ -100,9 +139,12 @@ function Login({ onLogin }) {
         }
       }
     } catch (e) {
-      console.log('checkBiometric error:', e);
-      setBiometricAvailable(false);
-      setBiometricEnrolled(false);
+      console.log('🔍 checkBiometric outer error:', e.message);
+      // On any error — if mobile, still show the button
+      if (isMobileDevice()) {
+        setBiometricAvailable(true);
+        setBiometricEnrolled(false);
+      }
     }
   };
 
@@ -117,26 +159,28 @@ function Login({ onLogin }) {
     }
 
     try {
-      if (isCapacitor()) {
-        // ── Native APK fingerprint ──────────────────────────────────────────
+      const cap = isCapacitor();
+      console.log('🔍 handleBiometricLogin — isCapacitor:', cap);
+
+      if (cap) {
+        // ── Native APK fingerprint ────────────────────────────────────────
         const BiometricAuth = await getBiometricAuth();
         if (!BiometricAuth) throw new Error('Plugin not available');
 
-        // @aparajita/capacitor-biometric-auth uses authenticate()
         await BiometricAuth.authenticate({
-          reason             : 'Login to Image Forensics App',
-          cancelTitle        : 'Cancel',
-          allowDeviceCredential: true,   // allow PIN fallback if fingerprint fails
-          iosFallbackTitle   : 'Use PIN'
+          reason              : 'Login to Image Forensics App',
+          cancelTitle         : 'Cancel',
+          allowDeviceCredential: true,
+          iosFallbackTitle    : 'Use PIN'
         });
 
-        // Biometric passed — restore session
+        // Passed — restore session
         localStorage.setItem('userUUID', savedUser.id);
         onLogin(savedUser, savedToken);
         navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
 
       } else {
-        // ── Web browser WebAuthn ────────────────────────────────────────────
+        // ── Web / WebAuthn fallback ───────────────────────────────────────
         const credentialId = localStorage.getItem('biometricCredentialId');
 
         const publicKeyOptions = {
@@ -146,30 +190,30 @@ function Login({ onLogin }) {
           timeout         : 60000
         };
 
-        // If we have the enrolled credential ID, pass it so the device
-        // knows exactly which credential to use (avoids "no matching credential")
         if (credentialId) {
           publicKeyOptions.allowCredentials = [{
             id        : base64ToUint8(credentialId),
             type      : 'public-key',
-            transports: ['internal']          // built-in sensor
+            transports: ['internal']
           }];
         }
 
         const credential = await navigator.credentials.get({ publicKey: publicKeyOptions });
 
         if (credential) {
-          // WebAuthn passed — restore session with saved user
           localStorage.setItem('userUUID', savedUser.id);
           onLogin(savedUser, savedToken);
           navigate(savedUser.role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
         }
       }
     } catch (e) {
+      console.log('🔍 biometricLogin error:', e.name, e.message);
       if (
         e.name === 'NotAllowedError' ||
         e.message?.includes('cancelled') ||
-        e.message?.includes('cancel')
+        e.message?.includes('cancel') ||
+        e.message?.includes('Cancel') ||
+        e.code === 10  // BiometricAuth cancel code
       ) {
         setError('Biometric cancelled. Please use your password.');
       } else if (e.name === 'InvalidStateError') {
