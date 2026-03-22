@@ -14,36 +14,45 @@ function PublicCertificateView() {
     loadCertificate();
   }, [certificateId]);
 
-  const loadCertificate = () => {
-  try {
-    console.log('Loading certificate:', certificateId);
-    
-    // Load from shared certificates (public storage)
-    const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
-    console.log('Shared certificates in localStorage:', sharedCerts);
-    
-    const cert = sharedCerts.find(c => 
-      c.certificateId === certificateId || 
-      c.certificate_id === certificateId ||
-      c.id === certificateId
-    );
-    
-    console.log('Found certificate in localStorage:', cert);
+  const loadCertificate = async () => {
+    try {
+      console.log('Loading certificate:', certificateId);
 
-    if (!cert) {
-      setError('Certificate not found or link has expired');
+      // ── Fetch from backend (works for anyone, any device) ──────────────
+      const res = await fetch(
+        `https://pinit-backend.onrender.com/certificates/public/${certificateId}`
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        setCertificate(data);
+        setLoading(false);
+        return;
+      }
+
+      // ── Fallback: check localStorage (own device) ───────────────────────
+      const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
+      const cert = sharedCerts.find(c =>
+        c.certificateId === certificateId ||
+        c.certificate_id === certificateId ||
+        c.id === certificateId
+      );
+
+      if (!cert) {
+        setError('Certificate not found or link has expired');
+        setLoading(false);
+        return;
+      }
+
+      setCertificate(cert);
       setLoading(false);
-      return;
-    }
 
-    setCertificate(cert);
-    setLoading(false);
-  } catch (err) {
-    console.error('Error loading certificate:', err);
-    setError('Error loading certificate: ' + err.message);
-    setLoading(false);
-  }
-};
+    } catch (err) {
+      console.error('Error loading certificate:', err);
+      setError('Error loading certificate: ' + err.message);
+      setLoading(false);
+    }
+  };
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
@@ -96,6 +105,7 @@ function PublicCertificateView() {
     const details = [
       ['Certificate ID:', certificate.certificateId],
       ['Asset ID:', certificate.assetId],
+      ['Owner Email:', certificate.ownerEmail || '—'],
       ['User ID:', certificate.userId],
       ['Date Created:', formatDate(certificate.dateCreated)],
       ['Confidence:', certificate.confidence + '%']
@@ -186,6 +196,10 @@ function PublicCertificateView() {
             <div className="pvp-row">
               <span className="pvp-row-label">Asset ID</span>
               <span className="pvp-row-value mono">{certificate.assetId}</span>
+            </div>
+            <div className="pvp-row">
+              <span className="pvp-row-label">Owner Email</span>
+              <span className="pvp-row-value mono">{certificate.ownerEmail || '—'}</span>
             </div>
             <div className="pvp-row">
               <span className="pvp-row-label">User ID</span>

@@ -217,6 +217,7 @@ function UserDashboard({ user, onLogout }) {
         certificateId: cert.certificate_id,
         assetId: cert.asset_id,
         userId: cert.user_id,
+        ownerEmail: user?.email || cert.owner_email || '—',
         confidence: cert.confidence,
         status: cert.status,
         dateCreated: cert.created_at,
@@ -237,6 +238,17 @@ function UserDashboard({ user, onLogout }) {
       
       sharedCerts.push(certToShare);
       localStorage.setItem('sharedCertificates', JSON.stringify(sharedCerts));
+
+      // Save to backend so shared link works for anyone (not just your device)
+      const token = localStorage.getItem('savedToken') || sessionStorage.getItem('pinit_token');
+      fetch('https://pinit-backend.onrender.com/certificates/share', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(certToShare)
+      }).catch(err => console.warn('Share save failed:', err.message));
     }
 
     // Generate shareable link (simple and clean!)
