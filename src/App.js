@@ -66,10 +66,25 @@ function App() {
   };
 
   const handleLogout = () => {
-    removeToken();
-    setCurrentUser(null);
-    setUserRole(null);
-  };
+  // Preserve biometric data before logout
+  const biometricEnrolled = localStorage.getItem('biometricEnrolled');
+  const biometricEmail    = localStorage.getItem('biometricEmail');
+  const biometricCredId   = localStorage.getItem('biometricCredentialId');
+  const savedToken        = localStorage.getItem('savedToken');
+  const savedUser         = localStorage.getItem('savedUser');
+
+  removeToken();
+
+  // Restore biometric data after logout
+  if (biometricEnrolled) localStorage.setItem('biometricEnrolled',    biometricEnrolled);
+  if (biometricEmail)    localStorage.setItem('biometricEmail',        biometricEmail);
+  if (biometricCredId)   localStorage.setItem('biometricCredentialId', biometricCredId);
+  if (savedToken)        localStorage.setItem('savedToken',            savedToken);
+  if (savedUser)         localStorage.setItem('savedUser',             savedUser);
+
+  setCurrentUser(null);
+  setUserRole(null);
+};
 
   const RequireAuth = ({ children, role }) => {
     if (loading) return <div>Loading...</div>;
@@ -108,7 +123,7 @@ function App() {
           }
         />
         <Route path="/public/verify" element={<PublicVerifyPage />} />
-        <Route path="/public/certificate" element={<PublicCertificateView />} />  {/* ← ADD THIS */}
+        <Route path="/public/certificate/:certificateId" element={<PublicCertificateView />} />  {/* ← ADD THIS */}
 
 
         {/* User routes */}

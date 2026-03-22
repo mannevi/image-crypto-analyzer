@@ -253,8 +253,7 @@ function UserDashboard({ user, onLogout }) {
 
     // Generate shareable link (simple and clean!)
 // ALWAYS use production URL (not preview!)
-const shareLink = `https://image-crypto-analyzer.vercel.app/certificate/${cert.certificate_id}`;
-    // Try native share API first (mobile devices)
+const shareLink = `https://image-crypto-analyzer.vercel.app/public/certificate/${cert.certificate_id}`;    // Try native share API first (mobile devices)
     if (navigator.share) {
       navigator.share({
         title: 'PINIT Ownership Certificate',
