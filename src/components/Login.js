@@ -40,6 +40,34 @@ const base64ToUint8 = (base64) => {
   return bytes;
 };
 
+// ─── Eye icon toggle helper ──────────────────────────────────────────────────
+const EyeIcon = ({ show, onToggle }) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    style={{
+      position: 'absolute', right: '12px', top: '50%',
+      transform: 'translateY(-50%)', background: 'none',
+      border: 'none', cursor: 'pointer', padding: '4px',
+      color: '#9ca3af', display: 'flex', alignItems: 'center'
+    }}
+    tabIndex={-1}
+  >
+    {show ? (
+      <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/>
+        <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/>
+        <line x1="1" y1="1" x2="23" y2="23"/>
+      </svg>
+    ) : (
+      <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    )}
+  </button>
+);
+
 // ─── Fetch with auto-retry (handles server cold start) ──────────────────────────
 const fetchWithRetry = async (url, options, retries = 3, delayMs = 4000) => {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -71,6 +99,11 @@ function Login({ onLogin }) {
   const [forgotError,      setForgotError]      = useState('');
   const [forgotLoading,    setForgotLoading]    = useState(false);
   const [forgotSuccess,    setForgotSuccess]    = useState('');
+
+  // ── Password visibility toggles ──────────────────────────────────────────
+  const [showLoginPwd,   setShowLoginPwd]   = useState(false);
+  const [showNewPwd,     setShowNewPwd]     = useState(false);
+  const [showConfirmPwd, setShowConfirmPwd] = useState(false);
 
   const [biometricAvailable, setBiometricAvailable] = useState(isMobileDevice());
   const [biometricEnrolled,  setBiometricEnrolled]  = useState(
@@ -523,8 +556,15 @@ function Login({ onLogin }) {
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <input type="password" id="password" name="password" value={formData.password}
-              onChange={handleChange} placeholder="Enter your password" required />
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showLoginPwd ? 'text' : 'password'}
+                id="password" name="password" value={formData.password}
+                onChange={handleChange} placeholder="Enter your password"
+                required style={{ paddingRight: '44px' }}
+              />
+              <EyeIcon show={showLoginPwd} onToggle={() => setShowLoginPwd(v => !v)} />
+            </div>
           </div>
 
           {/* Forgot links — user tab only */}
@@ -633,23 +673,29 @@ function Login({ onLogin }) {
                   {forgotError && <div className="error-message">{forgotError}</div>}
                   <div className="form-group">
                     <label>New Password</label>
-                    <input
-                      type="password"
-                      value={forgotNewPwd}
-                      onChange={e => { setForgotNewPwd(e.target.value); setForgotError(''); }}
-                      placeholder="Enter new password"
-                      required
-                    />
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={showNewPwd ? 'text' : 'password'}
+                        value={forgotNewPwd}
+                        onChange={e => { setForgotNewPwd(e.target.value); setForgotError(''); }}
+                        placeholder="Enter new password"
+                        required style={{ paddingRight: '44px' }}
+                      />
+                      <EyeIcon show={showNewPwd} onToggle={() => setShowNewPwd(v => !v)} />
+                    </div>
                   </div>
                   <div className="form-group">
                     <label>Confirm New Password</label>
-                    <input
-                      type="password"
-                      value={forgotConfirmPwd}
-                      onChange={e => { setForgotConfirmPwd(e.target.value); setForgotError(''); }}
-                      placeholder="Confirm new password"
-                      required
-                    />
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={showConfirmPwd ? 'text' : 'password'}
+                        value={forgotConfirmPwd}
+                        onChange={e => { setForgotConfirmPwd(e.target.value); setForgotError(''); }}
+                        placeholder="Confirm new password"
+                        required style={{ paddingRight: '44px' }}
+                      />
+                      <EyeIcon show={showConfirmPwd} onToggle={() => setShowConfirmPwd(v => !v)} />
+                    </div>
                   </div>
                   <button type="submit" className="btn-primary" disabled={forgotLoading}>
                     {forgotLoading ? '⏳ Resetting...' : 'Reset Password'}

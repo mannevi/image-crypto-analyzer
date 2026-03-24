@@ -310,3 +310,22 @@
   background: #f0f4ff;
   border-color: #667eea;
 }
+/* ── Username display box ──────────────────────────────────────────────────── */
+.forgot-username-display {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 16px 24px;
+  border-radius: 10px;
+  margin: 10px 0 16px;
+  text-align: center;
+  word-break: break-all;
+}
+
+/* ── Password eye toggle fix ───────────────────────────────────────────────── */
+.form-group input[style*="paddingRight"] {
+  width: 100%;
+  box-sizing: border-box;
+}
