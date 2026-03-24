@@ -168,3 +168,145 @@
   color: #667eea;
   font-size: 13px;
 }
+
+/* ── Forgot Links ─────────────────────────────────────────────────────────── */
+.forgot-links {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: -10px;
+  margin-bottom: 10px;
+}
+
+.forgot-link {
+  background: none;
+  border: none;
+  color: #667eea;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.forgot-link:hover {
+  color: #764ba2;
+  text-decoration: underline;
+}
+
+.forgot-divider {
+  color: #ccc;
+  font-size: 13px;
+}
+
+/* ── Forgot Modal Overlay ──────────────────────────────────────────────────── */
+.forgot-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.forgot-modal {
+  background: white;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  animation: forgotSlideIn 0.25s ease;
+}
+
+@keyframes forgotSlideIn {
+  from { opacity: 0; transform: translateY(-20px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)     scale(1);    }
+}
+
+.forgot-modal-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.forgot-modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.forgot-modal-close {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.forgot-modal-close:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.forgot-modal-body {
+  padding: 24px;
+}
+
+.forgot-desc {
+  color: #555;
+  font-size: 14px;
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+/* ── Success state ─────────────────────────────────────────────────────────── */
+.forgot-success {
+  text-align: center;
+  padding: 10px 0;
+}
+
+.forgot-success-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.forgot-success p {
+  color: #333;
+  font-size: 15px;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+/* ── Resend / back button ──────────────────────────────────────────────────── */
+.btn-resend {
+  width: 100%;
+  padding: 10px;
+  background: none;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  color: #667eea;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 10px;
+  transition: all 0.2s;
+}
+
+.btn-resend:hover {
+  background: #f0f4ff;
+  border-color: #667eea;
+}

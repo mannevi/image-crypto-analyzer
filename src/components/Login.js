@@ -48,6 +48,17 @@ function Login({ onLogin }) {
   const [loading,          setLoading]          = useState(false);
   const [biometricLoading, setBiometricLoading] = useState(false);
 
+  // ── Forgot Password / Username state ──────────────────────────────────────
+  const [forgotMode,       setForgotMode]       = useState(null);   // null | 'password' | 'username'
+  const [forgotStep,       setForgotStep]       = useState('email'); // 'email' | 'otp' | 'success'
+  const [forgotEmail,      setForgotEmail]      = useState('');
+  const [forgotOtp,        setForgotOtp]        = useState('');
+  const [forgotNewPwd,     setForgotNewPwd]     = useState('');
+  const [forgotConfirmPwd, setForgotConfirmPwd] = useState('');
+  const [forgotError,      setForgotError]      = useState('');
+  const [forgotLoading,    setForgotLoading]    = useState(false);
+  const [forgotSuccess,    setForgotSuccess]    = useState('');
+
   const [biometricAvailable, setBiometricAvailable] = useState(isMobileDevice());
   const [biometricEnrolled,  setBiometricEnrolled]  = useState(
     localStorage.getItem('biometricEnrolled') === 'true'
@@ -292,6 +303,113 @@ function Login({ onLogin }) {
     }
   };
 
+  // ── Forgot: open/close ────────────────────────────────────────────────────
+  const openForgot = (mode) => {
+    setForgotMode(mode);
+    setForgotStep('email');
+    setForgotEmail('');
+    setForgotOtp('');
+    setForgotNewPwd('');
+    setForgotConfirmPwd('');
+    setForgotError('');
+    setForgotSuccess('');
+    setForgotLoading(false);
+  };
+
+  const closeForgot = () => {
+    setForgotMode(null);
+    setForgotError('');
+    setForgotSuccess('');
+  };
+
+  // ── Forgot Password: Step 1 — send OTP ───────────────────────────────────
+  const handleForgotPasswordRequest = async (e) => {
+    e.preventDefault();
+    setForgotError('');
+    setForgotLoading(true);
+    try {
+      const res  = await fetch('https://pinit-backend.onrender.com/auth/forgot-password/request', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ email: forgotEmail.toLowerCase().trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setForgotError(data.detail || 'Email not registered');
+        return;
+      }
+      setForgotStep('otp');
+    } catch {
+      setForgotError('Cannot connect to server. Please try again.');
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  // ── Forgot Password: Step 2 — verify OTP + reset password ────────────────
+  const handleForgotPasswordReset = async (e) => {
+    e.preventDefault();
+    setForgotError('');
+
+    if (forgotNewPwd.length < 6) {
+      setForgotError('Password must be at least 6 characters.');
+      return;
+    }
+    if (forgotNewPwd !== forgotConfirmPwd) {
+      setForgotError('Passwords do not match.');
+      return;
+    }
+
+    setForgotLoading(true);
+    try {
+      const res  = await fetch('https://pinit-backend.onrender.com/auth/forgot-password/reset', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({
+          email       : forgotEmail.toLowerCase().trim(),
+          otp         : forgotOtp.trim(),
+          new_password: forgotNewPwd
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setForgotError(data.detail || 'Reset failed. Please try again.');
+        return;
+      }
+      setForgotStep('success');
+      setForgotSuccess('Password reset successfully! You can now login with your new password.');
+    } catch {
+      setForgotError('Cannot connect to server. Please try again.');
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  // ── Forgot Username: send username to email ───────────────────────────────
+  const handleForgotUsername = async (e) => {
+    e.preventDefault();
+    setForgotError('');
+    setForgotLoading(true);
+    try {
+      const res  = await fetch('https://pinit-backend.onrender.com/auth/forgot-username', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ email: forgotEmail.toLowerCase().trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setForgotError(data.detail || 'Email not registered');
+        return;
+      }
+      setForgotStep('success');
+      setForgotSuccess('Your username has been sent to your email address.');
+    } catch {
+      setForgotError('Cannot connect to server. Please try again.');
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
   const handleTabSwitch = (adminTab) => {
     setIsAdmin(adminTab);
     setFormData({ email: '', username: '', password: '' });
@@ -402,6 +520,19 @@ function Login({ onLogin }) {
               onChange={handleChange} placeholder="Enter your password" required />
           </div>
 
+          {/* Forgot links — user tab only */}
+          {!isAdmin && (
+            <div className="forgot-links">
+              <button type="button" className="forgot-link" onClick={() => openForgot('password')}>
+                Forgot Password?
+              </button>
+              <span className="forgot-divider">·</span>
+              <button type="button" className="forgot-link" onClick={() => openForgot('username')}>
+                Forgot Username?
+              </button>
+            </div>
+          )}
+
           <button type="submit" className="btn-primary" disabled={loading}>
             {loading ? 'Logging in...' : 'Login'}
           </button>
@@ -419,6 +550,134 @@ function Login({ onLogin }) {
         </form>
 
       </div>
+
+      {/* ── Forgot Password / Username Modal ───────────────────────────────── */}
+      {forgotMode && (
+        <div className="forgot-overlay" onClick={(e) => e.target === e.currentTarget && closeForgot()}>
+          <div className="forgot-modal">
+
+            {/* Header */}
+            <div className="forgot-modal-header">
+              <h2>
+                {forgotMode === 'password' ? '🔑 Reset Password' : '👤 Forgot Username'}
+              </h2>
+              <button className="forgot-modal-close" onClick={closeForgot}>✕</button>
+            </div>
+
+            <div className="forgot-modal-body">
+
+              {/* ── Success state ─────────────────────────────────────── */}
+              {forgotStep === 'success' && (
+                <div className="forgot-success">
+                  <div className="forgot-success-icon">✅</div>
+                  <p>{forgotSuccess}</p>
+                  <button className="btn-primary" onClick={closeForgot}>
+                    Back to Login
+                  </button>
+                </div>
+              )}
+
+              {/* ── Forgot Password: Step 1 — Email ───────────────────── */}
+              {forgotMode === 'password' && forgotStep === 'email' && (
+                <form onSubmit={handleForgotPasswordRequest}>
+                  <p className="forgot-desc">
+                    Enter your registered email address. We'll send you a verification code to reset your password.
+                  </p>
+                  {forgotError && <div className="error-message">{forgotError}</div>}
+                  <div className="form-group">
+                    <label>Email Address</label>
+                    <input
+                      type="email"
+                      value={forgotEmail}
+                      onChange={e => { setForgotEmail(e.target.value); setForgotError(''); }}
+                      placeholder="Enter your registered email"
+                      required
+                    />
+                  </div>
+                  <button type="submit" className="btn-primary" disabled={forgotLoading}>
+                    {forgotLoading ? 'Sending OTP...' : 'Send Verification Code'}
+                  </button>
+                </form>
+              )}
+
+              {/* ── Forgot Password: Step 2 — OTP + New Password ──────── */}
+              {forgotMode === 'password' && forgotStep === 'otp' && (
+                <form onSubmit={handleForgotPasswordReset}>
+                  <p className="forgot-desc">
+                    Enter the verification code sent to <strong>{forgotEmail}</strong> and set your new password.
+                  </p>
+                  {forgotError && <div className="error-message">{forgotError}</div>}
+                  <div className="form-group">
+                    <label>Verification Code (OTP)</label>
+                    <input
+                      type="text"
+                      value={forgotOtp}
+                      onChange={e => { setForgotOtp(e.target.value); setForgotError(''); }}
+                      placeholder="Enter OTP from email"
+                      maxLength={6}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>New Password</label>
+                    <input
+                      type="password"
+                      value={forgotNewPwd}
+                      onChange={e => { setForgotNewPwd(e.target.value); setForgotError(''); }}
+                      placeholder="Enter new password"
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Confirm New Password</label>
+                    <input
+                      type="password"
+                      value={forgotConfirmPwd}
+                      onChange={e => { setForgotConfirmPwd(e.target.value); setForgotError(''); }}
+                      placeholder="Confirm new password"
+                      required
+                    />
+                  </div>
+                  <button type="submit" className="btn-primary" disabled={forgotLoading}>
+                    {forgotLoading ? 'Resetting...' : 'Reset Password'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-resend"
+                    onClick={() => { setForgotStep('email'); setForgotError(''); setForgotOtp(''); }}
+                  >
+                    ← Change Email / Resend OTP
+                  </button>
+                </form>
+              )}
+
+              {/* ── Forgot Username: Email ─────────────────────────────── */}
+              {forgotMode === 'username' && forgotStep === 'email' && (
+                <form onSubmit={handleForgotUsername}>
+                  <p className="forgot-desc">
+                    Enter your registered email address. We'll send your username to that email.
+                  </p>
+                  {forgotError && <div className="error-message">{forgotError}</div>}
+                  <div className="form-group">
+                    <label>Email Address</label>
+                    <input
+                      type="email"
+                      value={forgotEmail}
+                      onChange={e => { setForgotEmail(e.target.value); setForgotError(''); }}
+                      placeholder="Enter your registered email"
+                      required
+                    />
+                  </div>
+                  <button type="submit" className="btn-primary" disabled={forgotLoading}>
+                    {forgotLoading ? 'Sending...' : 'Send My Username'}
+                  </button>
+                </form>
+              )}
+
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
