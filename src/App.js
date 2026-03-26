@@ -5,6 +5,7 @@ import Register from './components/Register';
 import UserDashboard from './components/UserDashboard';
 import AdminDashboard from './components/AdminDashboard';
 import AdminLayout from './components/AdminLayout';
+import ResetPassword from './components/ResetPassword';
 import ImageCryptoAnalyzer from './components/ImageCryptoAnalyzer';
 import AssetDetailPage from './components/AssetDetailPage';
 import AssetTrackingPage from './components/AssetTrackingPage';
@@ -208,6 +209,7 @@ function App() {
           }
         />
         <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
 
       </Routes>
     </Router>

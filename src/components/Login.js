@@ -368,7 +368,7 @@ function Login({ onLogin }) {
     setForgotSuccess('');
   };
 
-  // ── Forgot Password: Step 1 — verify email exists ───────────────────────
+  // ── Forgot Password: send reset link to email ───────────────────────────
   const handleForgotPasswordRequest = async (e) => {
     e.preventDefault();
     setForgotError('');
@@ -384,7 +384,8 @@ function Login({ onLogin }) {
         setForgotError(data.detail || 'Email not registered');
         return;
       }
-      setForgotStep('otp');
+      setForgotSuccess('A password reset link has been sent to ' + forgotEmail + '. Please check your inbox and click the link to reset your password.');
+      setForgotStep('success');
     } catch {
       setForgotError('Unable to connect. Please check your internet and try again.');
     } finally {
@@ -425,7 +426,7 @@ function Login({ onLogin }) {
     }
   };
 
-  // ── Forgot Username — show username instantly in app ──────────────────────
+  // ── Forgot Username — send username to email ────────────────────────────
   const handleForgotUsername = async (e) => {
     e.preventDefault();
     setForgotError('');
@@ -441,7 +442,7 @@ function Login({ onLogin }) {
         setForgotError(data.detail || 'Email not registered');
         return;
       }
-      setForgotSuccess(data.username);
+      setForgotSuccess('Your username has been sent to ' + forgotEmail + '. Please check your inbox.');
       setForgotStep('success');
     } catch {
       setForgotError('Unable to connect. Please check your internet and try again.');
@@ -616,25 +617,10 @@ function Login({ onLogin }) {
               {/* ── Success state ─────────────────────────────────────── */}
               {forgotStep === 'success' && (
                 <div className="forgot-success">
-                  <div className="forgot-success-icon">
-                    {forgotMode === 'username' ? '👤' : '✅'}
-                  </div>
-                  {forgotMode === 'username' ? (
-                    <>
-                      <p style={{ color: '#555', marginBottom: '8px' }}>Your username is:</p>
-                      <div style={{
-                        background: '#f0f4ff', border: '2px solid #667eea',
-                        borderRadius: '10px', padding: '16px 24px',
-                        fontSize: '22px', fontWeight: '700',
-                        color: '#667eea', letterSpacing: '2px',
-                        marginBottom: '20px'
-                      }}>
-                        {forgotSuccess}
-                      </div>
-                    </>
-                  ) : (
-                    <p>{forgotSuccess}</p>
-                  )}
+                  <div className="forgot-success-icon">📧</div>
+                  <p style={{ color: '#333', textAlign: 'center', lineHeight: '1.6' }}>
+                    {forgotSuccess}
+                  </p>
                   <button className="btn-primary" onClick={closeForgot}>
                     Back to Login
                   </button>
@@ -645,7 +631,7 @@ function Login({ onLogin }) {
               {forgotMode === 'password' && forgotStep === 'email' && (
                 <form onSubmit={handleForgotPasswordRequest}>
                   <p className="forgot-desc">
-                    Enter your registered email address to reset your password.
+                    Enter your registered email address. We'll send you a password reset link.
                   </p>
                   {forgotError && <div className="error-message">{forgotError}</div>}
                   <div className="form-group">
@@ -659,56 +645,12 @@ function Login({ onLogin }) {
                     />
                   </div>
                   <button type="submit" className="btn-primary" disabled={forgotLoading}>
-                    {forgotLoading ? '⏳ Connecting...' : 'Continue'}
+                    {forgotLoading ? '⏳ Sending...' : 'Send Reset Link'}
                   </button>
                 </form>
               )}
 
-              {/* ── Forgot Password: Step 2 — Set New Password ────────── */}
-              {forgotMode === 'password' && forgotStep === 'otp' && (
-                <form onSubmit={handleForgotPasswordReset}>
-                  <p className="forgot-desc">
-                    Set a new password for <strong>{forgotEmail}</strong>
-                  </p>
-                  {forgotError && <div className="error-message">{forgotError}</div>}
-                  <div className="form-group">
-                    <label>New Password</label>
-                    <div style={{ position: 'relative' }}>
-                      <input
-                        type={showNewPwd ? 'text' : 'password'}
-                        value={forgotNewPwd}
-                        onChange={e => { setForgotNewPwd(e.target.value); setForgotError(''); }}
-                        placeholder="Enter new password"
-                        required style={{ paddingRight: '44px' }}
-                      />
-                      <EyeIcon show={showNewPwd} onToggle={() => setShowNewPwd(v => !v)} />
-                    </div>
-                  </div>
-                  <div className="form-group">
-                    <label>Confirm New Password</label>
-                    <div style={{ position: 'relative' }}>
-                      <input
-                        type={showConfirmPwd ? 'text' : 'password'}
-                        value={forgotConfirmPwd}
-                        onChange={e => { setForgotConfirmPwd(e.target.value); setForgotError(''); }}
-                        placeholder="Confirm new password"
-                        required style={{ paddingRight: '44px' }}
-                      />
-                      <EyeIcon show={showConfirmPwd} onToggle={() => setShowConfirmPwd(v => !v)} />
-                    </div>
-                  </div>
-                  <button type="submit" className="btn-primary" disabled={forgotLoading}>
-                    {forgotLoading ? '⏳ Resetting...' : 'Reset Password'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-resend"
-                    onClick={() => { setForgotStep('email'); setForgotError(''); }}
-                  >
-                    ← Change Email
-                  </button>
-                </form>
-              )}
+              {/* Password reset is now done via email link */}
 
               {/* ── Forgot Username: Email ─────────────────────────────── */}
               {forgotMode === 'username' && forgotStep === 'email' && (
