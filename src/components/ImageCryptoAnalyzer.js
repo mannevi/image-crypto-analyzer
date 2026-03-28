@@ -718,25 +718,38 @@ const computeSHA256 = async (file) => {
   }
 };
 
-// Compute perceptual hash (pHash) of an image canvas — 16-char hex
+// Compute perceptual hash — 64-char 256-bit DCT pHash (16×16, upgraded from legacy 8×8)
+// FIX: Old version stored 16-char hashes. AssetTrackingPage expects 64-char.
+// Both now use the same algorithm — pHashSimilarity no longer returns 0 for existing assets.
 const computePerceptualHash = (canvas) => {
   try {
+    const SIZE = 32;
     const small = document.createElement('canvas');
-    small.width = 8;
-    small.height = 8;
-    const ctx = small.getContext('2d');
-    ctx.drawImage(canvas, 0, 0, 8, 8);
-    const data = ctx.getImageData(0, 0, 8, 8).data;
-    const grays = [];
-    for (let i = 0; i < 64; i++) {
-      grays.push(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
-    }
-    const avg = grays.reduce((a, b) => a + b, 0) / 64;
-    let bits = '';
-    for (const g of grays) bits += g >= avg ? '1' : '0';
+    small.width = SIZE; small.height = SIZE;
+    small.getContext('2d').drawImage(canvas, 0, 0, SIZE, SIZE);
+    const data = small.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+    const gray = [];
+    for (let i = 0; i < SIZE * SIZE; i++)
+      gray.push(0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2]);
+    const DCT = 16;
+    const dct = [];
+    for (let u = 0; u < DCT; u++)
+      for (let v = 0; v < DCT; v++) {
+        let sum = 0;
+        for (let x = 0; x < SIZE; x++)
+          for (let y = 0; y < SIZE; y++)
+            sum += gray[x*SIZE+y]
+              * Math.cos(((2*x+1)*u*Math.PI)/(2*SIZE))
+              * Math.cos(((2*y+1)*v*Math.PI)/(2*SIZE));
+        dct.push(sum);
+      }
+    const acDct  = dct.slice(1);
+    const median = [...acDct].sort((a,b)=>a-b)[Math.floor(acDct.length/2)];
+    const bits   = ['1', ...acDct.map(v => v >= median ? '1' : '0')];
     let hex = '';
-    for (let i = 0; i < 64; i += 4) hex += parseInt(bits.substr(i, 4), 2).toString(16);
-    return hex.toUpperCase();
+    for (let i = 0; i < 256; i += 4)
+      hex += parseInt(bits.slice(i, i+4).join(''), 2).toString(16);
+    return hex.toUpperCase(); // 64-char hex = 256-bit
   } catch (e) {
     return 'PHASH-UNAVAIL';
   }
