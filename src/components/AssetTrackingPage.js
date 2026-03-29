@@ -821,9 +821,17 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
   // ── STEP I: Pixel-level findings ─────────────────────────────────────────────
   if (pixelAnalysis) {
     const { changedPct, hotRegions, brightShift, rShift, gShift, bShift } = pixelAnalysis;
-    if (changedPct > 0.5 && changedPct <= 5)
-      changes.push({ type:'warning', category:'Pixel Edit',
-        text:`Minor pixel edits — ${changedPct}% of pixels changed vs thumbnail. (Note: JPEG compression alone causes minor pixel differences.)` });
+    if (changedPct > 0.5 && changedPct <= 5) {
+      if (pixelAnalysis.vsThumb) {
+        // Comparing against Cloudinary thumbnail — JPEG compression alone causes ~1–5% pixel diff.
+        // Downgrading to info so it doesn't trigger the MODIFIED verdict on a clean unedited file.
+        changes.push({ type:'info', category:'Pixel Edit',
+          text:`Minor pixel differences — ${changedPct}% vs thumbnail (expected from JPEG/WebP thumbnail compression; not evidence of editing).` });
+      } else {
+        changes.push({ type:'warning', category:'Pixel Edit',
+          text:`Minor pixel edits — ${changedPct}% of pixels changed vs original.` });
+      }
+    }
     else if (changedPct > 5 && changedPct <= 20)
       changes.push({ type:'warning', category:'Pixel Edit', text:`Moderate edits — ${changedPct}% of pixels changed.` });
     else if (changedPct > 20)

@@ -1884,8 +1884,21 @@ canvas.toBlob((blob) => {
 
         // ── Save to vault database IMMEDIATELY after encryption ─────────────
         const reader = new FileReader();
-        reader.onloadend = () => {
+        reader.onloadend = async () => {
           const thumbnail = reader.result;
+
+          // FIX (TC-01): Hash the encrypted blob, not the original file.
+          // The user downloads this blob; re-uploading it must produce the same hash
+          // so the SHA short-circuit in runComparison fires and returns CLEAN 100%.
+          let encryptedSHA = sha256Hash; // fallback to original SHA if crypto fails
+          try {
+            const encBuf   = await blob.arrayBuffer();
+            const hashBuf  = await crypto.subtle.digest('SHA-256', encBuf);
+            encryptedSHA   = Array.from(new Uint8Array(hashBuf))
+                               .map(b => b.toString(16).padStart(2, '0')).join('');
+          } catch (e) {
+            console.warn('SHA-256 of encrypted blob failed, falling back to original SHA:', e);
+          }
           
           // ACTUALLY save to backend vault API
           import('../api/client').then(({ vaultAPI }) => {
@@ -1899,7 +1912,7 @@ canvas.toBlob((blob) => {
   device_id:          deviceInfo.deviceId || 'UNKNOWN',
   certificate_id:     certId,
   owner_email:        user?.email || null,
-              file_hash:          sha256Hash || null,
+              file_hash:          encryptedSHA || null,
               visual_fingerprint: perceptualHash || null,
               blockchain_anchor:  blockchainAnchor || null,
               resolution:         `${canvas.width}x${canvas.height}`,
