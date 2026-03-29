@@ -643,7 +643,7 @@ function VerifyPage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => navigate(`/admin/track?search=${encodeURIComponent(m.asset_id)}`)}
+                    onClick={() => navigate(`/admin/assets?search=${encodeURIComponent(m.asset_id)}`)}
                     style={{ padding:'9px 18px', background:'#d97706', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontSize:12, fontWeight:700, whiteSpace:'nowrap', flexShrink:0 }}>
                     Compare →
                   </button>
