@@ -1621,15 +1621,35 @@ function AssetTrackingPage() {
 
               {/* ── Results ─────────────────────────────────────────────────── */}
               {comparisonResult && (() => {
+
+                // ── EXACT MATCH: SHA-256 identical — show ONLY clean result ──
+                if (comparisonResult.exactMatch) {
+                  return (
+                    <div className="comparison-results">
+                      <div className="verdict-banner clean" style={{justifyContent:'space-between',alignItems:'center'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:16}}>
+                          <CheckCircle size={36} color="#276749"/>
+                          <div>
+                            <div style={{fontWeight:800,fontSize:18,color:'#276749'}}>✓ ORIGINAL</div>
+                            <div style={{fontSize:13,color:'#4a5568',marginTop:2}}>SHA-256 exact match — this file is byte-for-byte identical to the registered vault original.</div>
+                          </div>
+                        </div>
+                        <div style={{fontWeight:900,fontSize:40,color:'#276749'}}>100%</div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // ── NO MATCH: SHA-256 differs — show DIFFERENT + full analysis ──
                 const vb = verdictBanner(comparisonResult.verdict3tier);
                 return (
                   <div className="comparison-results">
 
-                    {/* 3-tier verdict banner */}
+                    {/* Top status: DIFFERENT */}
                     <div className={`verdict-banner ${vb.cls}`}>
                       <div className="verdict-icon">{vb.icon}</div>
                       <div className="verdict-text">
-                        <h3>{comparisonResult.exactMatch ? '✓ Exact Match — Byte-for-Byte Identical' : vb.label}</h3>
+                        <h3>⚠ DIFFERENT — {vb.label.replace(/^[^—]+—\s*/,'')}</h3>
                         <p>{vb.sub}</p>
                         <p style={{margin:'4px 0 0',opacity:.85}}>{comparisonResult.visualVerdict} · Similarity: {comparisonResult.confidence}%</p>
                       </div>
@@ -1675,7 +1695,7 @@ function AssetTrackingPage() {
                       </div>
                     )}
 
-                    {/* Actions moved to bottom of results */}
+                    {/* Similarity bar */}
                     <div className="sim-bar-wrap">
                       <div className="sim-bar-track">
                         <div className={`sim-bar-fill ${comparisonResult.confidence>=80?'high':comparisonResult.confidence>=50?'mid':'low'}`}
@@ -1718,7 +1738,6 @@ function AssetTrackingPage() {
                         : comparisonResult.verdict3tier==='MODIFIED' ? '#fffaf0' : '#f0fff4';
                       return (
                         <div style={{border:`1.5px solid ${borderColor}`,borderRadius:10,background:bgColor,padding:'16px 20px',marginBottom:16,fontSize:13}}>
-
                           {/* UUID Analysis */}
                           <div style={{marginBottom:12}}>
                             <div style={{fontWeight:700,color:'#2d3748',marginBottom:6,fontSize:12,textTransform:'uppercase',letterSpacing:'.5px'}}>🔐 UUID Analysis</div>
@@ -1728,7 +1747,6 @@ function AssetTrackingPage() {
                               <div><span style={{color:'#718096'}}>Integrity:</span> <span style={{fontWeight:600,color:cs.uuidFound&&comparisonResult.uuidCheck?.matchesOwner===true?'#276749':'#c05621'}}>{cs.uuidIntegrity}</span></div>
                             </div>
                           </div>
-
                           {/* Visual Analysis */}
                           {cs.visualItems.length > 0 && (
                             <div style={{marginBottom:12}}>
@@ -1738,7 +1756,6 @@ function AssetTrackingPage() {
                               </ul>
                             </div>
                           )}
-
                           {/* Detected Modifications */}
                           {cs.detectedMods.length > 0 && (
                             <div style={{marginBottom:12}}>
@@ -1748,27 +1765,26 @@ function AssetTrackingPage() {
                               </ul>
                             </div>
                           )}
-
-                          {/* Conclusion + Confidence + Recommendation */}
+                          {/* Conclusion */}
                           <div style={{borderTop:`1px solid ${borderColor}`,paddingTop:12,marginTop:4}}>
                             <div style={{fontWeight:700,color:'#2d3748',marginBottom:6,fontSize:12,textTransform:'uppercase',letterSpacing:'.5px'}}>📋 Conclusion</div>
-                            <p style={{margin:'0 0 8px',color:'#2d3748',lineHeight:1.6}}>{cs.conclusion}</p>
-                            <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
-                              <div><span style={{color:'#718096'}}>Confidence: </span><span style={{fontWeight:700,color:cs.confidenceLabel==='High'?'#276749':cs.confidenceLabel==='Moderate'?'#c05621':'#c53030'}}>{cs.confidenceLabel}</span></div>
-                              <div><span style={{color:'#718096'}}>Recommendation: </span><span style={{fontWeight:600,color:'#2d3748'}}>{cs.recommendation}</span></div>
+                            <div style={{color:'#4a5568',lineHeight:1.6,marginBottom:8}}>{cs.conclusion}</div>
+                            <div style={{display:'flex',alignItems:'center',gap:8}}>
+                              <span style={{fontSize:11,color:'#718096'}}>Confidence: <strong style={{color:'#2d3748'}}>{cs.confidenceLabel} ({comparisonResult.confidence}%)</strong></span>
+                              {cs.recommendation && <span style={{fontSize:11,color:'#718096',borderLeft:'1px solid #e2e8f0',paddingLeft:8}}>Recommendation: <strong style={{color:'#2d3748'}}>{cs.recommendation}</strong></span>}
                             </div>
                           </div>
                         </div>
                       );
                     })()}
 
-                    {/* Changes + heatmap */}
+                    {/* Complete Change Analysis — only shown when SHA differs */}
                     <div className="changes-section">
                       <div style={{display:'flex',gap:20,alignItems:'flex-start'}}>
                         <div style={{flex:1}}>
                           <h4>Complete Change Analysis — All 6 Signals Combined</h4>
                           {comparisonResult.changes.length===0
-                            ? <div className="no-changes"><CheckCircle size={16}/> No modifications detected — image matches vault original.</div>
+                            ? <div className="no-changes"><CheckCircle size={16}/> No modifications detected.</div>
                             : <ul className="changes-list">
                                 {comparisonResult.changes.map((c,i) => (
                                   <li key={i} className={`change-item ${c.type}`}>
@@ -1817,7 +1833,7 @@ function AssetTrackingPage() {
                       </div>
                     </div>
 
-                    {/* Actions — at the very bottom of results */}
+                    {/* Actions */}
                     <div className="report-actions">
                       <button className={`btn-action copy-link ${linkCopied?'copied':''}`} onClick={handleCopyLink}>
                         <Link size={16}/>
