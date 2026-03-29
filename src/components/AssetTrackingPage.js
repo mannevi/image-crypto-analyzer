@@ -824,12 +824,18 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
     changes.push({ type:'info', category:'Format', text:`Format changed: ${origFmt} → ${uploadedFmt}.` });
 
   // ── STEP I: Pixel-level findings ─────────────────────────────────────────────
+  // CRITICAL: pixel diff runs against the Cloudinary THUMBNAIL (full image, 400px).
+  // If a crop or resize was already detected, the thumbnail covers a DIFFERENT region
+  // than the uploaded image — pixel diff and hotregion scores are meaningless and
+  // must NOT be treated as danger signals (TC-03: crop alone caused 74% "pixel change").
+  // Rule: pixel/hotregion signals are capped at 'warning' when geometric change is confirmed.
+  const hasGeometricChange = resChanged || changes.some(c => c.category === 'Cropping');
+
   if (pixelAnalysis) {
     const { changedPct, hotRegions, brightShift, rShift, gShift, bShift } = pixelAnalysis;
+
     if (changedPct > 0.5 && changedPct <= 5) {
       if (pixelAnalysis.vsThumb) {
-        // Comparing against Cloudinary thumbnail — JPEG compression alone causes ~1–5% pixel diff.
-        // Downgrading to info so it doesn't trigger the MODIFIED verdict on a clean unedited file.
         changes.push({ type:'info', category:'Pixel Edit',
           text:`Minor pixel differences — ${changedPct}% vs thumbnail (expected from JPEG/WebP thumbnail compression; not evidence of editing).` });
       } else {
@@ -839,12 +845,26 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
     }
     else if (changedPct > 5 && changedPct <= 20)
       changes.push({ type:'warning', category:'Pixel Edit', text:`Moderate edits — ${changedPct}% of pixels changed.` });
-    else if (changedPct > 20)
-      changes.push({ type:'danger', category:'Pixel Edit', text:`Extensive pixel modifications — ${changedPct}% of image altered.` });
-    hotRegions.slice(0,3).forEach(r =>
-      changes.push({ type: r.severity==='high' ? 'danger' : 'warning', category:'Region Edit',
-        text:`Localised change in ${r.name} region (intensity: ${r.score}/255).` })
-    );
+    else if (changedPct > 20) {
+      if (hasGeometricChange) {
+        // Pixel diff vs thumbnail is unreliable after a crop or resize — the thumbnail
+        // covers the full original image while the upload covers only part of it.
+        // Cap at warning so TC-03 stays MODIFIED not TAMPERED.
+        changes.push({ type:'warning', category:'Pixel Edit',
+          text:`${changedPct}% pixel difference vs thumbnail — expected after crop/resize (thumbnail covers the full original region; this does not indicate pixel-level manipulation).` });
+      } else {
+        changes.push({ type:'danger', category:'Pixel Edit',
+          text:`Extensive pixel modifications — ${changedPct}% of image altered.` });
+      }
+    }
+
+    hotRegions.slice(0,3).forEach(r => {
+      // Hotregion scores are also unreliable after crop/resize for the same reason.
+      const regionType = hasGeometricChange ? 'warning' : (r.severity==='high' ? 'danger' : 'warning');
+      changes.push({ type: regionType, category:'Region Edit',
+        text:`Localised change in ${r.name} region (intensity: ${r.score}/255).` });
+    });
+
     if (Math.abs(brightShift) > 5)
       changes.push({ type:'info', category:'Colour', text:`Brightness ${brightShift>0?'increased':'decreased'} by ~${Math.abs(brightShift).toFixed(1)} pts.` });
     const maxCh = Math.max(Math.abs(rShift), Math.abs(gShift), Math.abs(bShift));
