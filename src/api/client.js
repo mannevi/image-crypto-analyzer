@@ -35,12 +35,13 @@ export const authAPI = {
 
 // ─── Vault ────────────────────────────────────────────────────────────────────
 export const vaultAPI = {
-  save        : (data)    => request('POST',   '/vault/save', data),
-  list        : ()        => request('GET',    '/vault/list'),
-  getOne      : (id)      => request('GET',    `/vault/${id}`),
-  delete      : (id)      => request('DELETE', `/vault/${id}`),
-  verifyByHash: (hash)    => request('GET',    `/vault/verify/${hash}`, null, false),
-  search      : (q)       => request('GET',    `/vault/search/query?q=${encodeURIComponent(q)}`),
+  save        : (data)              => request('POST',   '/vault/save', data),
+  list        : ()                  => request('GET',    '/vault/list'),
+  getOne      : (id)                => request('GET',    `/vault/${id}`),
+  delete      : (id)                => request('DELETE', `/vault/${id}`),
+  verifyByHash: (hash)              => request('GET',    `/vault/verify/${hash}`, null, false),
+  search      : (q)                 => request('GET',    `/vault/search/query?q=${encodeURIComponent(q)}`),
+  visualSearch: (phash, threshold)  => request('POST',   '/vault/search/visual', { phash, threshold: threshold || 30 }),
 };
 
 // ─── Certificates ─────────────────────────────────────────────────────────────

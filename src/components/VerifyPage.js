@@ -1,8 +1,44 @@
 import React, { useState, useRef } from 'react';
-import { Upload, CheckCircle, XCircle, Image as ImageIcon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Upload, CheckCircle, XCircle, Image as ImageIcon, Search, Eye } from 'lucide-react';
 import './VerifyPage.css';
 
+// ── pHash — 64-char 256-bit DCT (same algorithm as AssetTrackingPage) ─────────
+// Used only when SHA-256 and UUID checks both fail, to find visually similar assets.
+const computePHashFromCanvas = (canvas) => {
+  try {
+    const SIZE = 32;
+    const small = document.createElement('canvas');
+    small.width = SIZE; small.height = SIZE;
+    small.getContext('2d').drawImage(canvas, 0, 0, SIZE, SIZE);
+    const data = small.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+    const gray = [];
+    for (let i = 0; i < SIZE * SIZE; i++)
+      gray.push(0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2]);
+    const DCT = 16;
+    const dct = [];
+    for (let u = 0; u < DCT; u++)
+      for (let v = 0; v < DCT; v++) {
+        let sum = 0;
+        for (let x = 0; x < SIZE; x++)
+          for (let y = 0; y < SIZE; y++)
+            sum += gray[x*SIZE+y]
+              * Math.cos(((2*x+1)*u*Math.PI)/(2*SIZE))
+              * Math.cos(((2*y+1)*v*Math.PI)/(2*SIZE));
+        dct.push(sum);
+      }
+    const acDct  = dct.slice(1);
+    const median = [...acDct].sort((a,b)=>a-b)[Math.floor(acDct.length/2)];
+    const bits   = ['1', ...acDct.map(v => v >= median ? '1' : '0')];
+    let hex = '';
+    for (let i = 0; i < 256; i += 4)
+      hex += parseInt(bits.slice(i, i+4).join(''), 2).toString(16);
+    return hex.toUpperCase(); // 64 chars
+  } catch { return null; }
+};
+
 function VerifyPage() {
+  const navigate = useNavigate();
   const [selectedFile, setSelectedFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [verifying, setVerifying] = useState(false);
@@ -321,11 +357,34 @@ function VerifyPage() {
       await sleep(400);
       setCurrentStep(5);
 
+      // ── STEP 3: Visual similarity search (only when both UUID and hash checks fail) ──
+      // Computes pHash of the uploaded image and searches all vault fingerprints.
+      // This is a NEW addition — existing match logic above is completely untouched.
+      let visualMatches    = [];
+      let visualSearchDone = false;
+
+      if (!matchFound) {
+        try {
+          const pHash = computePHashFromCanvas(canvas);
+          if (pHash) {
+            const { vaultAPI } = await import('../api/client');
+            const searchRes    = await vaultAPI.visualSearch(pHash, 30);
+            visualMatches      = searchRes.matches || [];
+          }
+          visualSearchDone = true;
+        } catch (e) {
+          console.warn('[Verify] Visual search failed:', e.message);
+          visualSearchDone = true;
+        }
+      }
+
       setVerificationResult({
         matchFound,
         asset    : matchedAsset,
         uuid     : uuidResult.userId || null,
         uuidFound: uuidResult.found,
+        visualMatches,
+        visualSearchDone,
       });
 
       setVerifying(false);
@@ -546,6 +605,108 @@ function VerifyPage() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Visual similarity results ───────────────────────────────────────
+            Only shown when no exact match (UUID/hash) was found.
+            Searches at 30% threshold — results grouped into 3 confidence bands
+            so admin always sees the full picture, not a cut-off list.          */}
+        {verificationResult && !verificationResult.matchFound && verificationResult.visualSearchDone && (
+          <div style={{ marginTop: 20 }}>
+            {verificationResult.visualMatches?.length > 0 ? (() => {
+              const all     = verificationResult.visualMatches;
+              const strong  = all.filter(m => m.similarity > 75);
+              const possible= all.filter(m => m.similarity >= 50 && m.similarity <= 75);
+              const weak    = all.filter(m => m.similarity < 50);
+
+              const MatchCard = ({ m }) => (
+                <div style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 0', borderTop:'1px solid #fde68a' }}>
+                  {m.thumbnail_url
+                    ? <img src={m.thumbnail_url} alt="" style={{ width:60, height:60, borderRadius:8, objectFit:'cover', border:'1px solid #fcd34d', flexShrink:0 }}/>
+                    : <div style={{ width:60, height:60, borderRadius:8, background:'#fef3c7', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                        <Eye size={22} color="#d97706"/>
+                      </div>}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontWeight:700, color:'#92400e', fontSize:14 }}>
+                      {m.similarity}% visual similarity
+                    </div>
+                    <div style={{ fontSize:12, color:'#78350f', marginTop:3 }}>
+                      {m.owner_name || 'Unknown owner'}
+                      {m.resolution ? ` · ${m.resolution}` : ''}
+                      {m.created_at ? ` · ${new Date(m.created_at).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}` : ''}
+                    </div>
+                    <div style={{ fontSize:11, color:'#a16207', fontFamily:'monospace', marginTop:3, wordBreak:'break-all' }}>
+                      {m.asset_id}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => navigate(`/admin/track?search=${encodeURIComponent(m.asset_id)}`)}
+                    style={{ padding:'9px 18px', background:'#d97706', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontSize:12, fontWeight:700, whiteSpace:'nowrap', flexShrink:0 }}>
+                    Compare →
+                  </button>
+                </div>
+              );
+
+              const Band = ({ title, color, bg, border, items, note }) => items.length === 0 ? null : (
+                <div style={{ background: bg, border: `1.5px solid ${border}`, borderRadius:12, padding:'16px 20px', marginBottom:12 }}>
+                  <div style={{ fontWeight:700, color, fontSize:13, marginBottom:4 }}>{title}</div>
+                  <div style={{ fontSize:12, color, opacity:0.85, marginBottom:8 }}>{note}</div>
+                  {items.map((m, i) => (
+                    <div key={m.asset_id} style={{ borderTop: i===0?'none':`1px solid ${border}` }}>
+                      <MatchCard m={m}/>
+                    </div>
+                  ))}
+                </div>
+              );
+
+              return (
+                <div style={{ background:'#fffbeb', border:'2px solid #fcd34d', borderRadius:14, padding:24 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                    <Search size={22} color="#92400e"/>
+                    <span style={{ fontSize:16, fontWeight:700, color:'#92400e' }}>
+                      Visually Similar Assets Found
+                    </span>
+                  </div>
+                  <p style={{ fontSize:13, color:'#78350f', marginBottom:18, lineHeight:1.6 }}>
+                    No exact match found. The results below are ranked by visual similarity.
+                    Click <strong>Compare →</strong> on any candidate to run a full forensic comparison in Track Assets.
+                  </p>
+
+                  <Band
+                    title="🟢 Strong Match (above 75%)"
+                    color="#166534" bg="#f0fdf4" border="#86efac"
+                    items={strong}
+                    note="Likely a modified or compressed version of this registered asset."
+                  />
+                  <Band
+                    title="🟡 Possible Match (50 – 75%)"
+                    color="#92400e" bg="#fffbeb" border="#fcd34d"
+                    items={possible}
+                    note="Visual similarity detected. May be cropped, filtered, or partially edited."
+                  />
+                  <Band
+                    title="🔴 Weak Similarity (below 50%)"
+                    color="#991b1b" bg="#fff5f5" border="#fca5a5"
+                    items={weak}
+                    note="Low confidence — could be coincidental. Review manually before drawing conclusions."
+                  />
+
+                  <div style={{ marginTop:12, paddingTop:12, borderTop:'1px solid #fde68a', fontSize:12, color:'#78350f' }}>
+                    ℹ Results searched across all {all.length > 0 ? 'vault' : ''} assets. All results above 30% similarity are shown — the admin makes the final judgment.
+                  </div>
+                </div>
+              );
+            })() : (
+              <div style={{ background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:12, padding:20, textAlign:'center' }}>
+                <div style={{ color:'#64748b', fontSize:13 }}>
+                  No visual similarity found — searched all vault assets down to 30% threshold.
+                </div>
+                <div style={{ color:'#94a3b8', fontSize:12, marginTop:6 }}>
+                  This image has no visual resemblance to any registered asset. It is likely unrelated to your vault, or has been modified beyond visual recognition.
+                </div>
               </div>
             )}
           </div>

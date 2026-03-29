@@ -749,7 +749,7 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
     }
   } else {
     changes.push({ type:'danger', category:'Ownership',
-      text:'No PINIT ownership signature found. Image may have been edited to strip it, or was never registered in this system.' });
+      text:'No PINIT ownership signature found. UUID embedding survives geometric cropping but is destroyed by brightness, contrast, or any pixel-level adjustment — its absence is evidence of pixel manipulation after embedding.' });
   }
 
   // ── STEP D: pHash visual fingerprint (primary visual signal) ─────────────────
@@ -896,24 +896,38 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
   const modifiedFileTime = (isTampered || isModified) ? rawModifiedFileTime : null;
 
   // ── STEP L: Confidence score ──────────────────────────────────────────────────
+  // Base from visual signals
   let confidence = 0;
   if (pSim !== null) {
     confidence = pSim;
-    if (histSim !== null) confidence = Math.round(confidence*0.70 + histSim*0.30);
-    if (pixelAnalysis) confidence = Math.round(Math.max(0, confidence - Math.min(20, pixelAnalysis.changedPct*0.4)));
+    if (histSim !== null) confidence = Math.round(confidence * 0.70 + histSim * 0.30);
+    // Pixel penalty reduced — pixel diff vs thumbnail is noisy for cropped images
+    if (pixelAnalysis) confidence = Math.round(Math.max(0, confidence - Math.min(10, pixelAnalysis.changedPct * 0.2)));
   } else if (histSim !== null) {
     confidence = histSim;
-    if (pixelAnalysis) confidence = Math.round(Math.max(0, confidence - Math.min(20, pixelAnalysis.changedPct*0.4)));
+    if (pixelAnalysis) confidence = Math.round(Math.max(0, confidence - Math.min(10, pixelAnalysis.changedPct * 0.2)));
   } else if (pixelAnalysis) {
     confidence = pixelAnalysis.pixelSimilarity;
   }
-  if (resChanged)                                              confidence -= 15;
-  if (changes.some(c => c.category==='Cropping'))             confidence -= 20;
-  if (changes.some(c => c.category==='Compression'))          confidence -= 10;
-  if (changes.some(c => c.category==='Rotation'))             confidence -= 5;
-  if (!uuidCheck.found)                                        confidence -= 15;
-  if (uuidCheck.found && uuidCheck.matchesOwner === false)     confidence -= 30;
-  confidence = Math.max(0, Math.min(100, confidence));
+
+  // Structural penalties — capped so they can't stack to 0 on a legitimate modified image
+  let totalPenalty = 0;
+  if (resChanged)                                              totalPenalty += 8;
+  if (changes.some(c => c.category === 'Cropping'))           totalPenalty += 8;
+  if (changes.some(c => c.category === 'Compression'))        totalPenalty += 5;
+  if (changes.some(c => c.category === 'Rotation'))           totalPenalty += 3;
+  if (!uuidCheck.found)                                        totalPenalty += 12;
+  if (uuidCheck.found && uuidCheck.matchesOwner === false)     totalPenalty += 30;
+  // Cap total structural penalty — prevents legitimate modified images hitting 0%
+  totalPenalty = Math.min(totalPenalty, 30);
+  confidence = Math.max(0, confidence - totalPenalty);
+
+  // UUID ownership confirmed = cryptographic proof this is the same asset.
+  // Even a heavily cropped + filtered image should never show 0% if UUID matches.
+  if (uuidCheck.found && uuidCheck.matchesOwner === true)  confidence = Math.max(confidence, 38);
+  else if (uuidCheck.found && uuidCheck.matchesOwner === null) confidence = Math.max(confidence, 22);
+
+  confidence = Math.min(100, confidence);
 
   return {
     changes, isTampered, isModified, verdict3tier, visualVerdict, confidence,
@@ -1037,7 +1051,9 @@ function AssetTrackingPage() {
   const fileInputRef = useRef(null);
 
   // FIX: Group by fileHash not assetId — assetId format differs between API + localStorage
-  const loadAssets = async () => {
+  // initialSearch: assetId passed from Verify page via ?search= URL param
+  // Filtering on raw data avoids the stale state closure bug in .then()
+  const loadAssets = async (initialSearch = null) => {
     try {
       const { adminAPI } = await import('../api/client');
       const response = await adminAPI.getAllVault();
@@ -1073,7 +1089,18 @@ function AssetTrackingPage() {
         versionCount: hashGroups[a.fileHash || a.file_hash || a.assetId || a.id] || 1,
         isDuplicate:  (hashGroups[a.fileHash || a.file_hash || a.assetId || a.id] || 1) > 1,
       }));
-      setAssets(withMeta); setFilteredAssets(withMeta);
+      setAssets(withMeta);
+      if (initialSearch) {
+        const q = initialSearch.toLowerCase();
+        setFilteredAssets(withMeta.filter(a =>
+          (a.assetId||'').toLowerCase().includes(q) ||
+          (a.ownerName||'').toLowerCase().includes(q) ||
+          (a.fileHash||'').toLowerCase().includes(q)
+        ));
+        setSearchQuery(initialSearch);
+      } else {
+        setFilteredAssets(withMeta);
+      }
     } catch (err) {
       console.warn('API unavailable, using localStorage:', err.message);
       const vault   = JSON.parse(localStorage.getItem('vaultImages') || '[]');
@@ -1083,13 +1110,28 @@ function AssetTrackingPage() {
       const hashGroups = {};
       combined.forEach(a => { const k=a.fileHash||a.assetId||a.id; hashGroups[k]=(hashGroups[k]||0)+1; });
       const withMeta = combined.map(a => ({ ...a, versionCount:hashGroups[a.fileHash||a.assetId||a.id]||1, isDuplicate:(hashGroups[a.fileHash||a.assetId||a.id]||1)>1 }));
-      setAssets(withMeta); setFilteredAssets(withMeta);
+      setAssets(withMeta);
+      if (initialSearch) {
+        const q = initialSearch.toLowerCase();
+        setFilteredAssets(withMeta.filter(a =>
+          (a.assetId||'').toLowerCase().includes(q) ||
+          (a.ownerName||'').toLowerCase().includes(q)
+        ));
+        setSearchQuery(initialSearch);
+      } else {
+        setFilteredAssets(withMeta);
+      }
     }
   };
 
   const handleRefresh = () => window.location.reload();
 
-  useEffect(() => { loadAssets(); }, []);
+  useEffect(() => {
+    // Read ?search= param set by Verify page when admin clicks Compare on a visual match
+    const params    = new URLSearchParams(window.location.search);
+    const preSearch = params.get('search') || null;
+    loadAssets(preSearch);
+  }, []);
 
   const handleSearch = (query) => {
     setSearchQuery(query);
@@ -1217,7 +1259,19 @@ function AssetTrackingPage() {
 
   const verdictBanner = (v3) => {
     if (v3 === 'TAMPERED') return { cls:'tampered', icon:<AlertTriangle size={28}/>, label:'🚨 TAMPERED — Strong evidence of deliberate alteration', sub:'This image shows clear signs of intentional modification.' };
-    if (v3 === 'MODIFIED') return { cls:'modified',  icon:<AlertTriangle size={28} style={{color:'#dd6b20'}}/>, label:'⚡ MODIFIED — Technical changes detected', sub:'Changes appear technical (compression, resize, etc.) — may not be malicious.' };
+    if (v3 === 'MODIFIED') {
+      const hasCrop    = comparisonResult?.changes?.some(c => c.category === 'Cropping' || c.category === 'Crop/Resize');
+      const uuidGone   = comparisonResult && !comparisonResult.uuidCheck?.found;
+      const hasBright  = comparisonResult?.changes?.some(c => c.category === 'Colour');
+      let sub = 'Technical changes detected — image is a modified derivative of the registered original.';
+      if (hasCrop && uuidGone && hasBright)
+        sub = 'Image was cropped and pixel-edited (brightness/contrast). The embedded UUID was destroyed by pixel manipulation — this is forensic evidence of editing after registration.';
+      else if (uuidGone && hasCrop)
+        sub = 'Image was cropped after registration. UUID embedding survives simple crops but was not found — pixel-level changes likely also applied.';
+      else if (uuidGone)
+        sub = 'Embedded UUID not found. UUID survives cropping alone but is destroyed by brightness, contrast, or filter adjustments — its absence indicates pixel-level editing.';
+      return { cls:'modified', icon:<AlertTriangle size={28} style={{color:'#dd6b20'}}/>, label:'⚡ MODIFIED — This image is a derivative of the registered original', sub };
+    }
     return { cls:'clean', icon:<CheckCircle size={28}/>, label:'✓ CLEAN — No significant changes detected', sub:'Image matches the vault original within normal encoding tolerances.' };
   };
 
