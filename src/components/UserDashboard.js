@@ -340,6 +340,11 @@ const shareLink = `https://image-crypto-analyzer.vercel.app/public/certificate/$
             <div className="overview-section">
               <h1>Dashboard Overview</h1>
               <p className="subtitle">Your activity at a glance</p>
+              <div className="quick-action">
+                <button onClick={() => navigate('/analyzer')} className="btn-quick-analyze">
+                  <Camera size={20} /> Quick Analyze
+                </button>
+              </div>
               <div className="stats-grid">
                 <div className="stat-card stat-encrypted">
                   <div className="stat-icon"><Image size={32} /></div>
@@ -393,11 +398,6 @@ const shareLink = `https://image-crypto-analyzer.vercel.app/public/certificate/$
                     <p className="subtitle">Start analyzing images to see activity here</p>
                   </div>
                 )}
-              </div>
-              <div className="quick-action">
-                <button onClick={() => navigate('/analyzer')} className="btn-quick-analyze">
-                  <Camera size={20} /> Quick Analyze
-                </button>
               </div>
             </div>
           )}
