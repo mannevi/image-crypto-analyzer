@@ -1853,7 +1853,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     }
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = () => async {
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
@@ -2146,7 +2146,7 @@ const saveReportToLocalStorage = (report, userInfo) => {
   ]);
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = () => async {
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
