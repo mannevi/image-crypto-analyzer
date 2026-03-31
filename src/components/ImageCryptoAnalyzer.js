@@ -2161,16 +2161,37 @@ const saveReportToLocalStorage = (report, userInfo) => {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       const uuidResult = extractUUIDWithRotation(canvas);
-          // ── SCENARIO GATE: Backend lookup only if UUID is found ───────────────
+
+      // ── SCENARIO GATE: Backend lookup only if UUID is found ──────────────────
+      // Primary  : look up by the embedded UUID (exact match — always tried first).
+      // Fallback : perceptual hash search — used when the B-channel steganography
+      //            is damaged (heavy re-encoding, social-media recompression) but
+      //            the image is still visually recognisable in the vault.
+      // No UUID  : no backend call at all — only heuristic classification runs.
       let originalRecord = null;
       if (uuidResult.found) {
         try {
           const { vaultAPI } = await import('../api/client');
           originalRecord = await vaultAPI.getByUUID(uuidResult.userId);
-          console.log('✅ Original record fetched from backend for UUID:', uuidResult.userId, originalRecord);
+          console.log('✅ Original record fetched by UUID:', uuidResult.userId);
         } catch (err) {
-          console.warn('⚠️ Backend UUID lookup failed — falling back to extracted data:', err.message);
-          originalRecord = null;
+          console.warn('⚠️ UUID lookup failed, trying visual search fallback:', err.message);
+          // ── Visual search fallback ──────────────────────────────────────────
+          // canvas is already drawn at this point so computePerceptualHash is safe.
+          try {
+            const { vaultAPI } = await import('../api/client');
+            const currentPHash  = computePerceptualHash(canvas);
+            const visualResult  = await vaultAPI.visualSearch(currentPHash, 70);
+            if (visualResult.matches && visualResult.matches.length > 0) {
+              originalRecord = visualResult.matches[0];
+              console.log('✅ Record found by visual match, similarity:', originalRecord.similarity + '%');
+            } else {
+              console.warn('⚠️ Visual search returned no matches — using extracted steganography data only.');
+            }
+          } catch (visualErr) {
+            console.warn('⚠️ Visual search also failed — using extracted data only:', visualErr.message);
+            originalRecord = null;
+          }
         }
       }
       // Compute cropInfo and resolutionMismatch BEFORE calling classifyImage,
