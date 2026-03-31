@@ -64,7 +64,7 @@ const saveToVault = (imageData, fileName, userId, fileSize, imageBlob) => {
   try {
     const canvas = document.createElement('canvas');
     const img = new Image();
-    img.onload = () => {
+      img.onload = async () => {
       const size = 80;
       canvas.width = size;
       canvas.height = size;
@@ -1022,199 +1022,164 @@ const buildResult = (m) => {
     gpsSource: m.gpsSource || 'Unknown', originalResolution: m.originalResolution,
     confidence: 'High' };
 };
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED METRICS BUILDER  (add this just above classifyImage)
+// ─────────────────────────────────────────────────────────────────────────────
+const buildMetrics = (
+  totalVariance, noiseLevel, smoothBlockRatio, edgeCoherence,
+  uniformityRatio, avgEntropy, compressionRatio, aspectRatio, channelCorrelation
+) => ({
+  variance:           totalVariance.toFixed(2),
+  noiseLevel:         noiseLevel.toFixed(2),
+  smoothBlockRatio:   (smoothBlockRatio * 100).toFixed(1) + '%',
+  edgeCoherence:      (edgeCoherence * 100).toFixed(1) + '%',
+  uniformityRatio:    (uniformityRatio * 100).toFixed(1) + '%',
+  entropy:            avgEntropy.toFixed(2),
+  compressionRatio:   compressionRatio.toFixed(3),
+  aspectRatio:        aspectRatio.toFixed(3),
+  channelCorrelation: channelCorrelation.toFixed(3)
+});
 
-// ============================================
+// ─────────────────────────────────────────────────────────────────────────────
 // IMAGE CLASSIFICATION
-// ============================================
-
-const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
-  const data = imageData.data;
-  const width = canvas.width;
-  const height = canvas.height;
+//   hasUUID          — extracted by extractUUIDWithRotation
+//   resolutionMismatch — computed outside, from cropInfo.isCropped
+//   exifHints        — { exifDeviceInfo, exifGPS, captureTimeData } (optional)
+// ─────────────────────────────────────────────────────────────────────────────
+const classifyImage = (
+  canvas, imageData, fileSize, fileName,
+  hasUUID,
+  resolutionMismatch = false,
+  exifHints = {}
+) => {
+  const data        = imageData.data;
+  const width       = canvas.width;
+  const height      = canvas.height;
   const totalPixels = width * height;
-  const pixelCount = data.length / 4;
+  const pixelCount  = data.length / 4;
 
-  // Get EXIF-like metadata indicators
-  const isPNG = fileName.toLowerCase().includes('.png');
-  const isJPEG = fileName.toLowerCase().includes('.jpg') || fileName.toLowerCase().includes('.jpeg');
+  const isPNG  = fileName.toLowerCase().endsWith('.png');
+  const isJPEG = fileName.toLowerCase().endsWith('.jpg')
+              || fileName.toLowerCase().endsWith('.jpeg');
 
-  // 1. Color Channel Correlation (AI images have unnatural correlation)
-  let rrCorr = 0, ggCorr = 0, bbCorr = 0, rgCorr = 0, rbCorr = 0, gbCorr = 0;
-  const sampleSize = Math.min(5000, pixelCount);
+  // EXIF hints — all safely default to "not found"
+  const exifDevice      = exifHints.exifDeviceInfo  || { found: false };
+  const exifGPSData     = exifHints.exifGPS         || { found: false };
+  const captureTimeData = exifHints.captureTimeData || { source: 'Unknown' };
 
-  for (let i = 0; i < sampleSize; i++) {
-    const idx = Math.floor(Math.random() * pixelCount) * 4;
-    const r = data[idx];
-    const g = data[idx + 1];
-    const b = data[idx + 2];
-
-    rrCorr += r * r;
-    ggCorr += g * g;
-    bbCorr += b * b;
-    rgCorr += r * g;
-    rbCorr += r * b;
-    gbCorr += g * b;
+  // ── 1. Channel correlation — deterministic stride (no Math.random) ──────────
+  let rrCorr = 0, ggCorr = 0, bbCorr = 0;
+  let rgCorr = 0, rbCorr = 0, gbCorr = 0;
+  const samplingStride = Math.max(1, Math.floor(pixelCount / 5000));
+  for (let i = 0; i < pixelCount; i += samplingStride) {
+    const idx = i * 4;
+    const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+    rrCorr += r * r; ggCorr += g * g; bbCorr += b * b;
+    rgCorr += r * g; rbCorr += r * b; gbCorr += g * b;
   }
+  const channelCorrelation = (rgCorr + rbCorr + gbCorr)
+                           / (rrCorr + ggCorr + bbCorr + 0.001);
 
-  const channelCorrelation = (rgCorr + rbCorr + gbCorr) / (rrCorr + ggCorr + bbCorr + 0.001);
-
-  // 2. Local Binary Pattern-like analysis (texture signature)
-  let uniformPatterns = 0;
-  let nonUniformPatterns = 0;
-
+  // ── 2. Local Binary Pattern — uniformity ratio ───────────────────────────────
+  let uniformPatterns = 0, nonUniformPatterns = 0;
   for (let y = 2; y < Math.min(height - 2, 100); y += 2) {
     for (let x = 2; x < Math.min(width - 2, 100); x += 2) {
-      const centerIdx = (y * width + x) * 4;
-      const center = data[centerIdx];
-
-      const neighbors = [
-        data[((y-1) * width + (x-1)) * 4],
-        data[((y-1) * width + x) * 4],
-        data[((y-1) * width + (x+1)) * 4],
-        data[(y * width + (x+1)) * 4],
-        data[((y+1) * width + (x+1)) * 4],
-        data[((y+1) * width + x) * 4],
-        data[((y+1) * width + (x-1)) * 4],
-        data[(y * width + (x-1)) * 4]
+      const center = data[(y * width + x) * 4];
+      const nb = [
+        data[((y-1)*width+(x-1))*4], data[((y-1)*width+x)*4],
+        data[((y-1)*width+(x+1))*4], data[(y*width+(x+1))*4],
+        data[((y+1)*width+(x+1))*4], data[((y+1)*width+x)*4],
+        data[((y+1)*width+(x-1))*4], data[(y*width+(x-1))*4]
       ];
-
       let transitions = 0;
       for (let i = 0; i < 8; i++) {
-        if ((neighbors[i] > center) !== (neighbors[(i+1) % 8] > center)) transitions++;
+        if ((nb[i] > center) !== (nb[(i + 1) % 8] > center)) transitions++;
       }
-
-      if (transitions <= 2) uniformPatterns++;
-      else nonUniformPatterns++;
+      if (transitions <= 2) uniformPatterns++; else nonUniformPatterns++;
     }
   }
-
   const uniformityRatio = uniformPatterns / (uniformPatterns + nonUniformPatterns + 0.001);
 
-  // 3. Frequency Domain Analysis (DCT-like for periodic patterns)
-  let highFreqEnergy = 0;
-  let lowFreqEnergy = 0;
-
+  // ── 3. Smooth block ratio (DCT-like) ─────────────────────────────────────────
+  let highFreqEnergy = 0, lowFreqEnergy = 0;
   for (let y = 0; y < Math.min(height - 4, 200); y += 4) {
     for (let x = 0; x < Math.min(width - 4, 200); x += 4) {
       let blockSum = 0;
-      let blockVariance = 0;
-
-      for (let dy = 0; dy < 4; dy++) {
-        for (let dx = 0; dx < 4; dx++) {
-          const idx = ((y + dy) * width + (x + dx)) * 4;
-          blockSum += data[idx];
-        }
-      }
-
+      for (let dy = 0; dy < 4; dy++)
+        for (let dx = 0; dx < 4; dx++)
+          blockSum += data[((y + dy) * width + (x + dx)) * 4];
       const blockMean = blockSum / 16;
-
-      for (let dy = 0; dy < 4; dy++) {
-        for (let dx = 0; dx < 4; dx++) {
-          const idx = ((y + dy) * width + (x + dx)) * 4;
-          blockVariance += Math.pow(data[idx] - blockMean, 2);
-        }
-      }
-
-      if (blockVariance < 100) lowFreqEnergy++;
-      else highFreqEnergy++;
+      let blockVariance = 0;
+      for (let dy = 0; dy < 4; dy++)
+        for (let dx = 0; dx < 4; dx++)
+          blockVariance += Math.pow(data[((y + dy) * width + (x + dx)) * 4] - blockMean, 2);
+      if (blockVariance < 100) lowFreqEnergy++; else highFreqEnergy++;
     }
   }
-
   const smoothBlockRatio = lowFreqEnergy / (lowFreqEnergy + highFreqEnergy + 0.001);
 
-  // 4. Edge Coherence (AI has overly coherent edges)
-  let coherentEdges = 0;
-  let totalEdges = 0;
-  const stride = width * 4;
-
+  // ── 4. Edge coherence ─────────────────────────────────────────────────────────
+  let coherentEdges = 0, totalEdges = 0;
+  const edgeStride = width * 4;
   for (let y = 2; y < height - 2; y += 2) {
     for (let x = 2; x < width - 2; x += 2) {
-      const idx = (y * width + x) * 4;
-
-      const gx = Math.abs(data[idx + 4] - data[idx - 4]);
-      const gy = Math.abs(data[idx + stride] - data[idx - stride]);
-      const magnitude = Math.sqrt(gx * gx + gy * gy);
-
-      if (magnitude > 20) {
+      const idx  = (y * width + x) * 4;
+      const gx   = Math.abs(data[idx + 4]          - data[idx - 4]);
+      const gy   = Math.abs(data[idx + edgeStride]  - data[idx - edgeStride]);
+      const mag  = Math.sqrt(gx * gx + gy * gy);
+      if (mag > 20) {
         totalEdges++;
-
-        const gx2 = Math.abs(data[idx + 8] - data[idx]);
-        const gy2 = Math.abs(data[idx + stride * 2] - data[idx]);
-        const magnitude2 = Math.sqrt(gx2 * gx2 + gy2 * gy2);
-
-        if (Math.abs(magnitude - magnitude2) < 10) coherentEdges++;
+        const gx2  = Math.abs(data[idx + 8]               - data[idx]);
+        const gy2  = Math.abs(data[idx + edgeStride * 2]   - data[idx]);
+        const mag2 = Math.sqrt(gx2 * gx2 + gy2 * gy2);
+        if (Math.abs(mag - mag2) < 10) coherentEdges++;
       }
     }
   }
-
   const edgeCoherence = totalEdges > 0 ? coherentEdges / totalEdges : 0;
 
-  // 5. Color Distribution Entropy
+  // ── 5. Color entropy ──────────────────────────────────────────────────────────
   const histR = new Array(256).fill(0);
   const histG = new Array(256).fill(0);
   const histB = new Array(256).fill(0);
-
   for (let i = 0; i < data.length; i += 4) {
-    histR[data[i]]++;
-    histG[data[i + 1]]++;
-    histB[data[i + 2]]++;
+    histR[data[i]]++; histG[data[i + 1]]++; histB[data[i + 2]]++;
   }
-
   let entropyR = 0, entropyG = 0, entropyB = 0;
   for (let i = 0; i < 256; i++) {
-    if (histR[i] > 0) {
-      const p = histR[i] / pixelCount;
-      entropyR -= p * Math.log2(p);
-    }
-    if (histG[i] > 0) {
-      const p = histG[i] / pixelCount;
-      entropyG -= p * Math.log2(p);
-    }
-    if (histB[i] > 0) {
-      const p = histB[i] / pixelCount;
-      entropyB -= p * Math.log2(p);
-    }
+    if (histR[i] > 0) { const p = histR[i] / pixelCount; entropyR -= p * Math.log2(p); }
+    if (histG[i] > 0) { const p = histG[i] / pixelCount; entropyG -= p * Math.log2(p); }
+    if (histB[i] > 0) { const p = histB[i] / pixelCount; entropyB -= p * Math.log2(p); }
   }
-
   const avgEntropy = (entropyR + entropyG + entropyB) / 3;
 
-  // 6. Pixel value clustering (AI tends to cluster values)
-  let clusterCount = 0;
-  const binSize = 10;
-  const bins = new Array(Math.ceil(256 / binSize)).fill(0);
-
+  // ── 6. Pixel clustering ───────────────────────────────────────────────────────
+  const bins = new Array(26).fill(0);
   for (let i = 0; i < data.length; i += 4) {
-    const avg = Math.floor((data[i] + data[i + 1] + data[i + 2]) / 3);
-    bins[Math.floor(avg / binSize)]++;
+    bins[Math.min(25, Math.floor((data[i] + data[i + 1] + data[i + 2]) / 3 / 10))]++;
   }
-
+  let clusterCount = 0;
   for (let i = 0; i < bins.length; i++) {
     if (bins[i] > pixelCount * 0.05) clusterCount++;
   }
-
   const clusteringScore = clusterCount / bins.length;
 
-  // 7. Basic metrics
+  // ── 7. Variance + noise ───────────────────────────────────────────────────────
   let rSum = 0, gSum = 0, bSum = 0;
   for (let i = 0; i < data.length; i += 4) {
-    rSum += data[i];
-    gSum += data[i + 1];
-    bSum += data[i + 2];
+    rSum += data[i]; gSum += data[i + 1]; bSum += data[i + 2];
   }
-
   const avgR = rSum / pixelCount;
   const avgG = gSum / pixelCount;
   const avgB = bSum / pixelCount;
-
   let totalVariance = 0;
   for (let i = 0; i < data.length; i += 4) {
-    totalVariance += Math.pow(data[i] - avgR, 2);
+    totalVariance += Math.pow(data[i]     - avgR, 2);
     totalVariance += Math.pow(data[i + 1] - avgG, 2);
     totalVariance += Math.pow(data[i + 2] - avgB, 2);
   }
   totalVariance = totalVariance / (pixelCount * 3);
 
-  // Simple noise level
   let noiseLevel = 0;
   for (let i = 4; i < data.length - 4; i += 4) {
     noiseLevel += Math.abs(data[i] - data[i - 4]);
@@ -1222,142 +1187,198 @@ const classifyImage = (canvas, imageData, fileSize, fileName, hasUUID) => {
   noiseLevel = noiseLevel / pixelCount;
 
   const compressionRatio = fileSize / totalPixels;
-  const aspectRatio = width / height;
+  const aspectRatio      = width / height;
 
-  // DECISION LOGIC with strict AI detection
-  let detectedCase = '';
-  let confidence = 0;
-  let reasoning = [];
-
+  // ── CASE 4 & 5: UUID direct detection ────────────────────────────────────────
+  // resolutionMismatch is computed outside and passed in.
+  // It is true when the embedded original resolution differs from the current one.
   if (hasUUID) {
-    const isNonStandardAspect = aspectRatio < 0.7 || aspectRatio > 1.8;
-    const likelyCropped = totalPixels < width * height * 0.85;
+    const metricsObj = buildMetrics(
+      totalVariance, noiseLevel, smoothBlockRatio, edgeCoherence,
+      uniformityRatio, avgEntropy, compressionRatio, aspectRatio, channelCorrelation
+    );
 
-    if (isNonStandardAspect || likelyCropped) {
-      detectedCase = 'Case 5: Encrypted with UUID and Cropped';
-      confidence = totalPixels < 150000 ? 85 : 95;
-      reasoning.push('UUID encryption header verified');
-      reasoning.push('Likely cropped image');
-      reasoning.push('Aspect ratio: ' + aspectRatio.toFixed(2));
-      if (totalPixels < 150000) {
-        reasoning.push('Reduced confidence due to small cropped size');
-      }
-    } else {
-      detectedCase = 'Case 4: Encrypted with UUID';
-      confidence = 98;
-      reasoning.push('UUID encryption header verified');
-    }
-  } else {
-    // AI Detection Score (0-100)
-    let aiScore = 0;
-
-    // Strong AI indicators
-    if (smoothBlockRatio > 0.6) aiScore += 25;
-    if (edgeCoherence > 0.7) aiScore += 25;
-    if (uniformityRatio > 0.65) aiScore += 20;
-    if (channelCorrelation > 0.85) aiScore += 15;
-    if (avgEntropy < 6.5) aiScore += 15;
-    if (clusteringScore < 0.3) aiScore += 15;
-    if (isPNG) aiScore += 10;
-    if (noiseLevel < 5) aiScore += 15;
-    if (width % 64 === 0 && height % 64 === 0) aiScore += 10;
-
-    // Mobile Detection Score (0-100)
-    let mobileScore = 0;
-
-    if (noiseLevel > 15) mobileScore += 30;
-    if (isJPEG) mobileScore += 25;
-    if (totalVariance > 3000) mobileScore += 20;
-    if (avgEntropy > 7.2) mobileScore += 20;
-    if (compressionRatio > 1.3) mobileScore += 15;
-    if (uniformityRatio < 0.4) mobileScore += 15;
-    if (smoothBlockRatio < 0.3) mobileScore += 15;
-
-    // Mobile aspect ratios
-    const mobileAspects = [0.5625, 0.75, 1.0, 1.333, 1.777, 2.0, 2.165];
-    if (mobileAspects.some(a => Math.abs(aspectRatio - a) < 0.05)) mobileScore += 20;
-
-    // Check for typical mobile dimensions
-    const commonMobileWidths = [720, 1080, 1440, 1920, 2160, 3024, 4032];
-    const commonMobileHeights = [1280, 1920, 2560, 2880, 4032];
-    if (commonMobileWidths.includes(width) || commonMobileHeights.includes(height)) mobileScore += 15;
-
-    // Web Download Score (0-100)
-    let webScore = 0;
-
-    if (compressionRatio > 0.5 && compressionRatio < 1.5) webScore += 25;
-    if (width % 10 === 0 && height % 10 === 0) webScore += 20;
-    if (noiseLevel > 8 && noiseLevel < 18) webScore += 20;
-    if (avgEntropy > 6.5 && avgEntropy < 7.5) webScore += 15;
-    if (uniformityRatio > 0.4 && uniformityRatio < 0.6) webScore += 15;
-    if (totalVariance > 1500 && totalVariance < 3500) webScore += 20;
-
-    // Determine winner with clear thresholds
-    const scoreDiff = Math.abs(aiScore - mobileScore);
-
-    if (aiScore >= 60) {
-      detectedCase = 'Case 2: AI Generated';
-      confidence = Math.min(aiScore, 97);
-      reasoning.push('Overly smooth blocks: ' + (smoothBlockRatio * 100).toFixed(1) + '%');
-      reasoning.push('Edge coherence: ' + (edgeCoherence * 100).toFixed(1) + '%');
-      reasoning.push('Uniform texture patterns detected');
-      if (isPNG) reasoning.push('PNG format (common for AI tools)');
-      if (avgEntropy < 6.5) reasoning.push('Low color entropy: ' + avgEntropy.toFixed(2));
-      if (width % 64 === 0 || height % 64 === 0) reasoning.push('AI-typical dimensions: ' + width + 'x' + height);
-
-    } else if (mobileScore >= 60) {
-      detectedCase = 'Case 1: Mobile Captured';
-      confidence = Math.min(mobileScore, 97);
-      reasoning.push('High sensor noise: ' + noiseLevel.toFixed(2));
-      reasoning.push('Natural variance: ' + totalVariance.toFixed(2));
-      if (isJPEG) reasoning.push('JPEG format (mobile camera)');
-      reasoning.push('High color entropy: ' + avgEntropy.toFixed(2));
-      reasoning.push('Non-uniform texture: ' + (uniformityRatio * 100).toFixed(1) + '%');
-
-    } else if (aiScore > mobileScore && aiScore > webScore) {
-      detectedCase = 'Case 2: AI Generated';
-      confidence = Math.min(Math.max(aiScore, 55), 85);
-      reasoning.push('AI characteristics detected');
-      reasoning.push('Smooth blocks: ' + (smoothBlockRatio * 100).toFixed(1) + '%');
-      reasoning.push('Edge coherence: ' + (edgeCoherence * 100).toFixed(1) + '%');
-
-    } else if (mobileScore > webScore) {
-      detectedCase = 'Case 1: Mobile Captured';
-      confidence = Math.min(Math.max(mobileScore, 55), 85);
-      reasoning.push('Mobile characteristics detected');
-      reasoning.push('Noise level: ' + noiseLevel.toFixed(2));
-      reasoning.push('Variance: ' + totalVariance.toFixed(2));
-
-    } else {
-      detectedCase = 'Case 3: Downloaded from Web';
-      confidence = Math.min(Math.max(webScore, 60), 80);
-      reasoning.push('Standard web image characteristics');
-      reasoning.push('Moderate compression and entropy');
+    if (resolutionMismatch) {
+      return {
+        caseCode:      'CASE_5',
+        internalLabel: 'Case 5: Encrypted with UUID and Cropped',
+        displayLabel:  'Embedded UUID detected; resolution mismatch observed',
+        detectedCase:  'Case 5: Encrypted with UUID and Cropped',   // backward compat
+        confidence:    95,
+        evidenceLevel: 'Direct',
+        reasoning: [
+          'UUID encryption header verified',
+          'Current resolution does not match the originally embedded resolution',
+          'Image may have been cropped or resized after encryption'
+        ],
+        metrics: metricsObj
+      };
     }
 
-    // Warn if close call
-    if (scoreDiff < 20 && confidence > 70) {
-      const secondPlace = aiScore > mobileScore ? 'Mobile' : 'AI';
-      reasoning.push('Note: Some ' + secondPlace + ' characteristics present');
-      confidence = Math.min(confidence, 75);
-    }
+    return {
+      caseCode:      'CASE_4',
+      internalLabel: 'Case 4: Encrypted with UUID',
+      displayLabel:  'Embedded UUID detected',
+      detectedCase:  'Case 4: Encrypted with UUID',                 // backward compat
+      confidence:    98,
+      evidenceLevel: 'Direct',
+      reasoning:     [
+        'UUID encryption header verified',
+        'Resolution matches originally embedded dimensions'
+      ],
+      metrics: metricsObj
+    };
   }
 
-  return {
-    detectedCase,
-    confidence,
-    reasoning,
-    metrics: {
-      variance: totalVariance.toFixed(2),
-      noiseLevel: noiseLevel.toFixed(2),
-      smoothBlockRatio: (smoothBlockRatio * 100).toFixed(1) + '%',
-      edgeCoherence: (edgeCoherence * 100).toFixed(1) + '%',
-      uniformityRatio: (uniformityRatio * 100).toFixed(1) + '%',
-      entropy: avgEntropy.toFixed(2),
-      compressionRatio: compressionRatio.toFixed(3),
-      aspectRatio: aspectRatio.toFixed(3),
-      channelCorrelation: channelCorrelation.toFixed(3)
+  // ── HEURISTIC SCORING — Cases 1, 2, 3 ────────────────────────────────────────
+  // Each signal: fired (bool), weight (3=strong / 2=moderate / 1=supporting), label
+  // Confidence = 50 + (firedScore / maxScore) * 35  →  range 50–85
+  // Winner selected on normalised ratio so the three scales are comparable
+
+  const mobileDims       = [720, 1080, 1440, 1920, 2160, 3024, 4032];
+  const mobileHeights    = [1280, 1920, 2560, 2880, 4032];
+  const mobileAspects    = [0.5625, 0.75, 1.0, 1.333, 1.777, 2.0, 2.165];
+  const isCommonMobileDim    = mobileDims.includes(width) || mobileHeights.includes(height);
+  const isCommonMobileAspect = mobileAspects.some(a => Math.abs(aspectRatio - a) < 0.05);
+
+  // ── AI signals ────────────────────────────────────────────────────────────────
+  const aiSignals = [
+    { fired: smoothBlockRatio > 0.65,             weight: 3, label: 'Very smooth texture detected (smooth block ratio: '    + (smoothBlockRatio   * 100).toFixed(1) + '%)' },
+    { fired: edgeCoherence > 0.72,                weight: 3, label: 'Unnaturally coherent edges (coherence: '              + (edgeCoherence       * 100).toFixed(1) + '%)' },
+    { fired: noiseLevel < 4,                      weight: 3, label: 'Near-zero sensor noise (noise level: '                + noiseLevel.toFixed(2)                         + ')' },
+    { fired: uniformityRatio > 0.65,              weight: 2, label: 'Uniform texture patterns detected (LBP uniformity: '  + (uniformityRatio    * 100).toFixed(1) + '%)' },
+    { fired: avgEntropy < 6.5,                    weight: 2, label: 'Low color entropy — limited palette (entropy: '       + avgEntropy.toFixed(2)                         + ')' },
+    { fired: channelCorrelation > 0.87,           weight: 2, label: 'Unnatural RGB channel correlation ('                  + channelCorrelation.toFixed(3)                  + ')' },
+    { fired: isPNG,                               weight: 1, label: 'PNG format — common export format for AI tools'                                                           },
+    { fired: width % 64 === 0 && height % 64 === 0, weight: 1, label: 'Dimensions are multiples of 64 (' + width + 'x' + height + ') — typical AI grid size'               },
+    { fired: clusteringScore < 0.25,              weight: 1, label: 'Pixel value clustering pattern detected'                                                                  }
+  ];
+
+  // ── Mobile signals ────────────────────────────────────────────────────────────
+  const mobileSignals = [
+    { fired: noiseLevel > 15,                          weight: 3, label: 'High sensor noise consistent with camera hardware (noise: '   + noiseLevel.toFixed(2)        + ')' },
+    { fired: isJPEG && totalVariance > 2500,           weight: 3, label: 'JPEG format with high natural pixel variance ('               + totalVariance.toFixed(0)      + ')' },
+    { fired: exifDevice.found === true,                weight: 3, label: 'Camera device identified in EXIF metadata'
+                                                                        + (exifDevice.deviceName ? ' (' + exifDevice.deviceName + ')' : '')                                    },
+    { fired: avgEntropy > 7.0,                         weight: 2, label: 'High color entropy — rich natural scene (entropy: '          + avgEntropy.toFixed(2)         + ')' },
+    { fired: uniformityRatio < 0.4,                    weight: 2, label: 'Non-uniform texture — consistent with real-world photography'                                        },
+    { fired: smoothBlockRatio < 0.3,                   weight: 2, label: 'Rough block distribution — natural photographic texture'                                             },
+    { fired: isCommonMobileAspect,                     weight: 2, label: 'Aspect ratio matches common phone format ('                   + aspectRatio.toFixed(3)        + ')' },
+    { fired: compressionRatio > 1.3,                   weight: 1, label: 'High compression ratio suggests large camera file ('         + compressionRatio.toFixed(3)   + ')' },
+    { fired: isCommonMobileDim,                        weight: 1, label: 'Dimensions match a known phone camera resolution ('          + width + 'x' + height          + ')' },
+    { fired: captureTimeData.source === 'EXIF',        weight: 1, label: 'Original capture timestamp found in EXIF data'                                                       },
+    { fired: exifGPSData.found === true,               weight: 1, label: 'GPS coordinates found in EXIF data'                                                                  }
+  ];
+
+  // ── Web signals ───────────────────────────────────────────────────────────────
+  const webSignals = [
+    { fired: compressionRatio > 0.4 && compressionRatio < 1.5,       weight: 2, label: 'Compression ratio typical of web-optimised images ('   + compressionRatio.toFixed(3) + ')' },
+    { fired: width % 10 === 0 && height % 10 === 0,                   weight: 2, label: 'Rounded dimensions consistent with web-resized content (' + width + 'x' + height  + ')' },
+    { fired: avgEntropy > 6.5 && avgEntropy < 7.3,                    weight: 2, label: 'Moderate color entropy — typical of web-sourced images (entropy: ' + avgEntropy.toFixed(2) + ')' },
+    { fired: totalVariance > 1200 && totalVariance < 3500,            weight: 2, label: 'Moderate pixel variance consistent with web-processed content'                              },
+    { fired: !isCommonMobileDim && !isCommonMobileAspect,             weight: 1, label: 'No common mobile hardware dimensions detected'                                              },
+    { fired: noiseLevel > 5 && noiseLevel < 15,                       weight: 1, label: 'Noise level in typical web-processing range (' + noiseLevel.toFixed(2) + ')'              },
+    { fired: !exifDevice.found,                                        weight: 1, label: 'No EXIF device metadata found'                                                              }
+  ];
+
+  // ── Score each case ───────────────────────────────────────────────────────────
+  const evaluateSignals = (signals) => {
+    let firedScore = 0, maxScore = 0;
+    let strongFired = 0, modFired = 0;
+    const firedLabels = [];
+
+    for (const s of signals) {
+      maxScore += s.weight;
+      if (s.fired) {
+        firedScore += s.weight;
+        firedLabels.push(s.label);
+        if (s.weight === 3) strongFired++;
+        else if (s.weight === 2) modFired++;
+      }
     }
+
+    const ratio      = maxScore > 0 ? firedScore / maxScore : 0;
+    const confidence = Math.round(50 + ratio * 35);  // 50–85, never 90+ for heuristic cases
+
+    let evidenceLevel;
+    if      (strongFired >= 2 || (strongFired >= 1 && modFired >= 2)) evidenceLevel = 'Strong';
+    else if (strongFired >= 1 || modFired >= 3)                       evidenceLevel = 'Moderate';
+    else if (modFired >= 1 || firedScore > 0)                         evidenceLevel = 'Weak';
+    else                                                               evidenceLevel = 'Insufficient';
+
+    return { ratio, confidence, strongFired, modFired, evidenceLevel, firedLabels };
+  };
+
+  const aiEval     = evaluateSignals(aiSignals);
+  const mobileEval = evaluateSignals(mobileSignals);
+  const webEval    = evaluateSignals(webSignals);
+
+  // ── Winner: normalised ratio makes the three scales comparable ───────────────
+  const winnerRatio = Math.max(aiEval.ratio, mobileEval.ratio, webEval.ratio);
+  const winner = aiEval.ratio === winnerRatio     ? 'AI'
+               : mobileEval.ratio === winnerRatio ? 'MOBILE'
+               :                                    'WEB';
+
+  // ── Competition penalty: reduce confidence when second place is close ─────────
+  const penalise = (winRatio, secondRatio, conf) => {
+    const gap = winRatio - secondRatio;
+    if (gap < 0.10) return Math.max(50, conf - 10);
+    if (gap < 0.20) return Math.max(50, conf - 5);
+    return conf;
+  };
+
+  const metricsObj = buildMetrics(
+    totalVariance, noiseLevel, smoothBlockRatio, edgeCoherence,
+    uniformityRatio, avgEntropy, compressionRatio, aspectRatio, channelCorrelation
+  );
+
+  if (winner === 'AI') {
+    const finalConf = penalise(aiEval.ratio, Math.max(mobileEval.ratio, webEval.ratio), aiEval.confidence);
+    const reasoning = [...aiEval.firedLabels];
+    if (mobileEval.strongFired > 0)
+      reasoning.push('Note: Some mobile-like characteristics also present');
+    return {
+      caseCode:      'CASE_2',
+      internalLabel: 'Case 2: AI Generated',
+      displayLabel:  'Likely AI-generated',
+      detectedCase:  'Case 2: AI Generated',      // backward compat
+      confidence:    finalConf,
+      evidenceLevel: aiEval.evidenceLevel,
+      reasoning,
+      metrics:       metricsObj
+    };
+  }
+
+  if (winner === 'MOBILE') {
+    const finalConf = penalise(mobileEval.ratio, Math.max(aiEval.ratio, webEval.ratio), mobileEval.confidence);
+    const reasoning = [...mobileEval.firedLabels];
+    if (aiEval.strongFired > 0)
+      reasoning.push('Note: Some AI-like smoothness also detected');
+    return {
+      caseCode:      'CASE_1',
+      internalLabel: 'Case 1: Mobile Captured',
+      displayLabel:  'Likely mobile-captured',
+      detectedCase:  'Case 1: Mobile Captured',   // backward compat
+      confidence:    finalConf,
+      evidenceLevel: mobileEval.evidenceLevel,
+      reasoning,
+      metrics:       metricsObj
+    };
+  }
+
+  // Default: web-sourced
+  const finalConf = penalise(webEval.ratio, Math.max(aiEval.ratio, mobileEval.ratio), webEval.confidence);
+  return {
+    caseCode:      'CASE_3',
+    internalLabel: 'Case 3: Downloaded from Web',
+    displayLabel:  'Likely web-sourced',
+    detectedCase:  'Case 3: Downloaded from Web', // backward compat
+    confidence:    finalConf,
+    evidenceLevel: webEval.evidenceLevel,
+    reasoning:     webEval.firedLabels.length > 0
+      ? webEval.firedLabels
+      : ['No strong mobile or AI indicators detected — most consistent with a web-sourced image'],
+    metrics:       metricsObj
   };
 };
 
@@ -2030,9 +2051,9 @@ const saveReportToLocalStorage = (report, userInfo) => {
       // Save analysis report
       compareAPI.save({
          asset_id:            enhancedReport.assetId         || 'UNKNOWN',
-  is_tampered:         enhancedReport.isTampered       || false,
-confidence: Math.round(enhancedReport.confidence || 0),
-phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null,  visual_verdict:      enhancedReport.visualVerdict    || 'Unknown',
+     is_tampered: enhancedReport.integrityStatus === 'Possible modification detected',
+   confidence: Math.round(enhancedReport.confidence || 0),
+    phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null,  visual_verdict:      enhancedReport.visualVerdict    || 'Unknown',
   editing_tool:        enhancedReport.editingTool      || 'Unknown',
   changes:             enhancedReport.changes          || [],
   pixel_analysis:      enhancedReport.pixelAnalysis    || {},
@@ -2050,7 +2071,7 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
           certificate_id: enhancedReport.authorshipCertificateId,
           asset_id:       enhancedReport.assetId,
           confidence:     enhancedReport.confidence,
-          status:         enhancedReport.ownershipInfo?.includes('Verified') ? 'Verified' : 'Unknown',
+          status: enhancedReport.ownershipInfo?.includes('Embedded UUID detected') ? 'UUID Detected' : 'No UUID',
           analysis_data:  enhancedReport,
           image_preview:  enhancedReport.imagePreview || null,
         }).then(() => {
@@ -2065,17 +2086,25 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
     console.error('Error saving report:', error);
     }
 };
-
+   // ── Integrity status helper ─────────────────────────────────────────────────
+// Called once when building the report. The result flows into both save paths.
+//   uuidFound        — did UUID extraction succeed?
+//   hasCropMismatch  — does cropInfo show a resolution mismatch?
+  const computeIntegrityStatus = (uuidFound, hasCropMismatch) => {
+  if (uuidFound && !hasCropMismatch) return 'Protected';
+  if (uuidFound && hasCropMismatch)  return 'Possible modification detected';
+  return 'Unprotected image';
+  };
   // Save analysis to Track Assets (admin tracking system)
   const saveToTrackAssets = (report, imagePreview) => {
     try {
       import('../api/client').then(({ compareAPI }) => {
         compareAPI.save({
           asset_id:            report.assetId,
-          is_tampered:         report.detectedCase?.includes('Encrypted') ? false : true,
+          is_tampered:    report.integrityStatus === 'Possible modification detected',
           confidence:          Math.round(report.confidence || 0),
           phash_sim:           null,
-          visual_verdict:      report.detectedCase || 'Unknown',
+          visual_verdict: report.integrityStatus + ' — ' + (report.detectedCase || 'Unknown'),
           editing_tool:        'Unknown',
           changes:             report.reasoning || [],
           pixel_analysis:      report.metrics || {},
@@ -2109,6 +2138,12 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
     // Fetch public IP address
     const publicIP = await getPublicIP();
     const deviceId = getDeviceFingerprint();
+     // Run EXIF extraction in parallel — results are passed into classifyImage
+  const [analyzeExifDevice, analyzeExifGPS, analyzeCaptureTime] = await Promise.all([
+    getExifDeviceInfo(selectedFile),
+    getExifGPS(selectedFile),
+    getCaptureTime(selectedFile)
+  ]);
 
     const img = new Image();
     img.onload = () => {
@@ -2121,13 +2156,60 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       const uuidResult = extractUUIDWithRotation(canvas);
+          // ── SCENARIO GATE: Backend lookup only if UUID is found ───────────────
+      let originalRecord = null;
+      if (uuidResult.found) {
+        try {
+          const { vaultAPI } = await import('../api/client');
+          originalRecord = await vaultAPI.getByUUID(uuidResult.userId);
+          console.log('✅ Original record fetched from backend for UUID:', uuidResult.userId, originalRecord);
+        } catch (err) {
+          console.warn('⚠️ Backend UUID lookup failed — falling back to extracted data:', err.message);
+          originalRecord = null;
+        }
+      }
+      // Compute cropInfo and resolutionMismatch BEFORE calling classifyImage,
+      // so Case 4 vs Case 5 is decided on real resolution data, not pixel math.
+      const currentResolution = canvas.width + 'x' + canvas.height;
+      let cropInfo           = null;
+      let resolutionMismatch = false;
+
+      if (uuidResult.found && uuidResult.originalResolution) {
+        const originalRes        = uuidResult.originalResolution;
+        const normalizedOriginal = originalRes.replace(/\s/g, '').toLowerCase();
+        const normalizedCurrent  = currentResolution.replace(/\s/g, '').toLowerCase();
+
+        if (normalizedOriginal !== normalizedCurrent) {
+          const originalParts  = originalRes.split(/\s*x\s*/i);
+          const originalWidth  = parseInt(originalParts[0]);
+          const originalHeight = parseInt(originalParts[1]);
+          const originalPixels = originalWidth * originalHeight;
+          const currentPixels  = canvas.width * canvas.height;
+
+          cropInfo = {
+            isCropped:          true,
+            originalResolution: originalRes,
+            currentResolution:  currentResolution,
+            originalPixels:     originalPixels.toLocaleString(),
+            currentPixels:      currentPixels.toLocaleString(),
+            remainingPercentage: ((currentPixels / originalPixels) * 100).toFixed(2) + '%'
+          };
+          resolutionMismatch = true;
+        }
+      }
 
       const classification = classifyImage(
         canvas,
         imageData,
         selectedFile.size,
         selectedFile.name,
-        uuidResult.found
+        uuidResult.found,
+        resolutionMismatch,
+        {
+          exifDeviceInfo:  analyzeExifDevice,
+          exifGPS:         analyzeExifGPS,
+          captureTimeData: analyzeCaptureTime
+        }
       );
 
       const totalPixels = canvas.width * canvas.height;
@@ -2136,104 +2218,117 @@ phash_sim:  enhancedReport.pHashSim ? Math.round(enhancedReport.pHashSim) : null
       const assetId = generateAssetId(imageData);
 
       // Use extracted data for encrypted images, otherwise use current device data
-      const extractedDeviceName = uuidResult.found && uuidResult.deviceName ? uuidResult.deviceName : null;
-      const extractedDeviceId = uuidResult.found && uuidResult.deviceId ? uuidResult.deviceId : null;
-      const extractedIpAddress = uuidResult.found && uuidResult.ipAddress ? uuidResult.ipAddress : null;
-      const extractedUserId = uuidResult.found ? uuidResult.userId : 'redt';
+      // ── BUILD REPORT: branch on whether UUID was found ────────────────────
+      let report;
 
-      // [NEW] Detect if image was cropped using embedded original resolution
-      let cropInfo = null;
-      const currentResolution = canvas.width + 'x' + canvas.height;
+      if (uuidResult.found) {
+        // ── UUID FOUND: pull original fields from backend record ──────────
+        const rec = originalRecord || {};
 
-      if (uuidResult.found && uuidResult.originalResolution) {
-        const originalRes = uuidResult.originalResolution;
+        const originalUserId     = rec.user_id            || uuidResult.userId          || null;
+        const originalDeviceId   = rec.device_id          || uuidResult.deviceId        || deviceId;
+        const originalDeviceName = uuidResult.deviceName  || rec.device_id              || getCurrentDeviceName();
+        const originalCertId     = rec.certificate_id     || generateAuthorshipCertificateId(uuidResult.userId, uuidResult.deviceId || deviceId);
+        const originalResolution = rec.resolution         || uuidResult.originalResolution || currentResolution;
+        const originalTimestamp  = rec.capture_timestamp
+          ? new Date(rec.capture_timestamp).getTime()
+          : (uuidResult.timestamp || null);
+        const originalFileSize   = rec.file_size          || (selectedFile.size / 1024).toFixed(2) + ' KB';
+        const originalIpAddress  = uuidResult.ipAddress   || publicIP;
+        const originalIpSource   = uuidResult.ipSource    || 'Embedded';
+        const originalDeviceSrc  = uuidResult.deviceSource || 'Embedded';
 
-        // Normalize both resolutions (remove spaces for accurate comparison)
-        const normalizedOriginal = originalRes.replace(/\s/g, '').toLowerCase();
-        const normalizedCurrent  = currentResolution.replace(/\s/g, '').toLowerCase();
+        report = {
+          // ── SECTION A: Original Embedded Record (from backend / extracted) ──
+          assetId:                      rec.asset_id || assetId,
+          uniqueUserId:                 originalUserId,
+          assetFileSize:                originalFileSize,
+          assetResolution:              originalResolution,
+          userEncryptedResolution:      originalResolution,
+          timestamp:                    originalTimestamp,
+          captureLocationInfo:          captureSource,
+          gpsLocation:                  uuidResult.gps,
+          totalPixels:                  totalPixels.toLocaleString(),
+          pixelsVerifiedWithBiometrics: Math.floor(totalPixels * 0.98).toLocaleString(),
+          deviceName:                   originalDeviceName,
+          deviceDetails:                getDeviceDetails(),
+          deviceId:                     originalDeviceId,
+          deviceSource:                 originalDeviceSrc,
+          ipAddress:                    originalIpAddress,
+          ipSource:                     originalIpSource,
+          authorshipCertificateId:      originalCertId,
+          authorshipCertificate:        'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : 'File') + ')',
+          ownershipInfo:                'Embedded UUID detected',
+          metadataSource:               originalRecord ? 'backend' : 'extracted',
 
-        if (normalizedOriginal !== normalizedCurrent) {
-          // Image was ACTUALLY cropped!
-          const originalParts  = originalRes.split(/\s*x\s*/i);
-          const originalWidth  = parseInt(originalParts[0]);
-          const originalHeight = parseInt(originalParts[1]);
-          const originalPixels = originalWidth * originalHeight;
-          const currentPixels  = canvas.width * canvas.height;
-          const remainingPercentage = ((currentPixels / originalPixels) * 100).toFixed(2);
+          // ── SECTION B: Current Uploaded Image Analysis ────────────────────
+          uploadedResolution:  currentResolution,
+          uploadedSize:        (selectedFile.size / 1024).toFixed(2) + ' KB',
+          rotationDetected:    uuidResult.rotationDetected,
+          rotationMessage:     uuidResult.rotationMessage,
+          cropInfo:            cropInfo,
+          resolutionMismatch:  resolutionMismatch,
+          integrityStatus:     computeIntegrityStatus(true, cropInfo?.isCropped === true),
 
-          cropInfo = {
-            isCropped: true,
-            originalResolution: originalRes,
-            currentResolution: currentResolution,
-            originalPixels: originalPixels.toLocaleString(),
-            currentPixels: currentPixels.toLocaleString(),
-            remainingPercentage: remainingPercentage + '%'
-          };
-        } else {
-          // Not cropped - resolutions match
-          cropInfo = null;
-        }
+          // ── Classification (current image) ────────────────────────────────
+          detectedCase:  classification.detectedCase,
+          caseCode:      classification.caseCode,
+          internalLabel: classification.internalLabel,
+          displayLabel:  classification.displayLabel,
+          evidenceLevel: classification.evidenceLevel,
+          confidence:    classification.confidence,
+          reasoning:     classification.reasoning,
+          metrics:       classification.metrics,
+        };
+
+      } else {
+        // ── NO UUID: Case 1 / 2 / 3 only — no backend call, no ownership ──
+        report = {
+          assetId:                      assetId,
+          uniqueUserId:                 null,
+          assetFileSize:                (selectedFile.size / 1024).toFixed(2) + ' KB',
+          assetResolution:              currentResolution,
+          userEncryptedResolution:      'N/A',
+          timestamp:                    null,
+          captureLocationInfo:          captureSource,
+          gpsLocation:                  { available: false },
+          totalPixels:                  totalPixels.toLocaleString(),
+          pixelsVerifiedWithBiometrics: '0',
+          deviceName:                   getCurrentDeviceName(),
+          deviceDetails:                getDeviceDetails(),
+          deviceId:                     deviceId,
+          deviceSource:                 'Current Device',
+          ipAddress:                    publicIP,
+          ipSource:                     'Current Device',
+          authorshipCertificateId:      null,
+          authorshipCertificate:        'Not Present',
+          ownershipInfo:                'No embedded UUID detected',
+          metadataSource:               'none',
+
+          uploadedResolution:  currentResolution,
+          uploadedSize:        (selectedFile.size / 1024).toFixed(2) + ' KB',
+          rotationDetected:    null,
+          rotationMessage:     'No rotation detected',
+          cropInfo:            null,
+          resolutionMismatch:  false,
+          integrityStatus:     'Unprotected image',
+
+          detectedCase:  classification.detectedCase,
+          caseCode:      classification.caseCode,
+          internalLabel: classification.internalLabel,
+          displayLabel:  classification.displayLabel,
+          evidenceLevel: classification.evidenceLevel,
+          confidence:    classification.confidence,
+          reasoning:     classification.reasoning,
+          metrics:       classification.metrics,
+        };
       }
-
-      const report = {
-        assetId: assetId,
-        uniqueUserId: extractedUserId,
-        assetFileSize: (selectedFile.size / 1024).toFixed(2) + ' KB',
-        assetResolution: currentResolution,
-        userEncryptedResolution: uuidResult.found ? currentResolution : 'N/A',
-        timestamp: uuidResult.found && uuidResult.timestamp ? uuidResult.timestamp : null,
-        captureLocationInfo: captureSource,
-        gpsLocation: uuidResult.gps,
-        totalPixels: totalPixels.toLocaleString(),
-        pixelsVerifiedWithBiometrics: uuidResult.found ? Math.floor(totalPixels * 0.98).toLocaleString() : '0',
-        deviceName: extractedDeviceName || getCurrentDeviceName(),
-        deviceDetails: getDeviceDetails(),
-        deviceId: extractedDeviceId || deviceId,
-        deviceSource: uuidResult.found ? uuidResult.deviceSource : 'Current Device',
-        ipAddress: extractedIpAddress || publicIP,
-        ipSource: uuidResult.found ? uuidResult.ipSource : 'Current Device',
-        ownershipInfo: uuidResult.found ? 'Verified - ' + uuidResult.confidence + ' Confidence' : 'Unknown',
-        authorshipCertificateId: uuidResult.found
-          ? generateAuthorshipCertificateId(extractedUserId, extractedDeviceId || deviceId)
-          : 'Not Present',
-        authorshipCertificate: uuidResult.found
-          ? 'Valid & Verified (' + (selectedFile.type.startsWith('image/') ? 'Image' : 'File') + ')'
-          : 'Not Present',
-        detectedCase: classification.detectedCase,
-        confidence: classification.confidence,
-        reasoning: classification.reasoning,
-        metrics: classification.metrics,
-        rotationDetected: uuidResult.rotationDetected,
-        rotationMessage: uuidResult.rotationMessage,
-        cropInfo: cropInfo  // [NEW] crop detection result
-      };
 
       setAnalysisReport(report);
-
-      // Save to legacy analysisReports storage
       saveReportToLocalStorage(report, user);
-
       setProcessing(false);
-
-      // [NEW] Update dashboard stats via helper
-      updateForensicsStats('analyzed', {
-        fileName: selectedFile.name
-      });
-
-      // [NEW] Save to vault if image has a verified UUID
-      if (uuidResult.found) {
-        saveToVault(
-          preview,
-          selectedFile.name,
-          uuidResult.userId,
-          (selectedFile.size / 1024).toFixed(2) + ' KB',
-          null
-        );
-      }
-
-      // [NEW] Generate and save comprehensive certificate
+      updateForensicsStats('analyzed', { fileName: selectedFile.name });
       saveCertificate(report, preview);
-	  // [NEW] Save to Track Assets for admin tracking
       saveToTrackAssets(report, preview);
     };
     img.src = preview;
