@@ -18,7 +18,10 @@ function AssetsPage() {
       try {
         const res = await adminAPI.getAllVault();
         const raw = res.assets || [];
-        const mapped = raw.map(a => ({
+        const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+        const mapped = raw
+          .filter(a => !blacklist.includes(a.asset_id) && !blacklist.includes(a.id) && !blacklist.includes(a.assetId))
+          .map(a => ({
           ...a,
           assetId:        a.asset_id       || a.assetId,
           reportId:       a.id             || a.asset_id,
@@ -41,6 +44,10 @@ function AssetsPage() {
           blockchainAnchor: a.blockchain_anchor || a.blockchainAnchor || null,
           gpsLocation:    a.gps_location   || a.gpsLocation     || null,
           detectedCase:   a.status === 'verified' ? 'Case 1: Verified' : 'Case 2: Unknown',
+          isCropped:      a.is_cropped || false,
+          cropOriginalResolution:   a.crop_original_resolution  || null,
+          cropCurrentResolution:    a.crop_current_resolution   || null,
+          cropRemainingPercentage:  a.crop_remaining_percentage || null,
         }));
         setAssets(mapped);
         setFilteredAssets(mapped);
@@ -94,39 +101,42 @@ function AssetsPage() {
 
   const deleteAsset = async (asset) => {
     setDeleting(true);
-    const id = asset.reportId || asset.assetId || asset.id;
-    try {
-      // 1. Delete from backend
-      await vaultAPI.delete(id);
-    } catch (err) {
-      console.warn('Backend delete failed or not implemented:', err);
-    }
+    const id = asset.asset_id || asset.assetId || asset.reportId || asset.id;
 
-    // 2. Remove from localStorage — vaultImages
+    // Blacklist ALL id variants immediately — covers every refresh scenario
     try {
-      const vault = JSON.parse(localStorage.getItem('vaultImages') || '[]');
-      const cleaned = vault.filter(a =>
-        a.assetId !== asset.assetId &&
-        a.id      !== id &&
-        a.uniqueUserId !== asset.uniqueUserId
-      );
-      localStorage.setItem('vaultImages', JSON.stringify(cleaned));
+      const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+      [id, asset.asset_id, asset.assetId, asset.reportId, asset.id]
+        .filter(Boolean)
+        .forEach(v => { if (!blacklist.includes(v)) blacklist.push(v); });
+      localStorage.setItem('pinit_deleted_ids', JSON.stringify(blacklist));
     } catch (e) { console.warn(e); }
 
-    // 3. Remove from localStorage — analysisReports
+    // Delete from backend
+    try { await vaultAPI.delete(id); } catch (err) { console.warn('Backend delete failed:', err); }
+
+    // Remove from all localStorage
     try {
-      const reports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
-      const cleaned = reports.filter(a =>
-        a.assetId !== asset.assetId &&
-        a.id      !== id
-      );
-      localStorage.setItem('analysisReports', JSON.stringify(cleaned));
+      ['vaultImages', 'analysisReports'].forEach(key => {
+        const arr = JSON.parse(localStorage.getItem(key) || '[]');
+        localStorage.setItem(key, JSON.stringify(
+          arr.filter(a => a.assetId !== id && a.asset_id !== id && a.id !== id && a.reportId !== id)
+        ));
+      });
     } catch (e) { console.warn(e); }
+
+    // Remove from React state — filter on ALL id variants
+    const match = (a) => [id, asset.asset_id, asset.assetId, asset.reportId]
+      .filter(Boolean)
+      .some(v => (a.asset_id || a.assetId || a.reportId || a.id) === v);
+    setAssets(prev => prev.filter(a => !match(a)));
+    setFilteredAssets(prev => prev.filter(a => !match(a)));
+
+    setDeleting(false);
+    setDeleteConfirm(null);
+  };
 
     // 4. Remove from state
-    setAssets(prev => prev.filter(a => a.reportId !== asset.reportId));
-    setFilteredAssets(prev => prev.filter(a => a.reportId !== asset.reportId));
-
     setDeleting(false);
     setDeleteConfirm(null);
   };
@@ -175,6 +185,7 @@ function AssetsPage() {
     <div class="item"><div class="label">File Size</div><div class="value">${asset.assetFileSize||'—'}</div></div>
     <div class="item"><div class="label">Created</div><div class="value">${asset.createdAt ? new Date(asset.createdAt).toLocaleDateString() : '—'}</div></div>
     <div class="item"><div class="label">Platform Copies</div><div class="value">${asset.platformCopies||0}</div></div>
+    <div class="item"><div class="label">Image Cropped</div><div class="value">${asset.isCropped ? `Yes ✂️ — ${asset.cropOriginalResolution} → ${asset.cropCurrentResolution} (${asset.cropRemainingPercentage} remaining)` : 'No'}</div></div>
   </div>
   <div class="footer">Report generated: ${new Date().toLocaleString()} | Image Forensics App</div>
 </body></html>`;
@@ -448,6 +459,16 @@ function AssetsPage() {
                   <div className="detail-item">
                     <span className="label">Created:</span>
                     <span className="value">{formatDate(selectedAsset.timestamp || selectedAsset.createdAt)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Image Cropped:</span>
+                    {selectedAsset.isCropped ? (
+                      <span className="value" style={{ color: '#7c3aed', fontWeight: '600' }}>
+                        Yes ✂️ ({selectedAsset.cropOriginalResolution} → {selectedAsset.cropCurrentResolution}, {selectedAsset.cropRemainingPercentage} remaining)
+                      </span>
+                    ) : (
+                      <span className="value" style={{ color: '#6b7280' }}>No</span>
+                    )}
                   </div>
                   {selectedAsset.gpsLocation?.available && (
                     <div className="detail-item">

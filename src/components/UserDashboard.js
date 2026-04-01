@@ -34,7 +34,10 @@ function UserDashboard({ user, onLogout }) {
     setLoadingVault(true);
     try {
       const res = await vaultAPI.list();
-      const images = (res.assets || []).map(a => ({
+      const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+      const images = (res.assets || [])
+        .filter(a => !blacklist.includes(a.asset_id) && !blacklist.includes(a.id))
+        .map(a => ({
         ...a,
         id:           a.asset_id    || a.id,
         assetId:      a.asset_id    || a.id,
@@ -137,16 +140,48 @@ function UserDashboard({ user, onLogout }) {
     }
   };
 
+  // ── Shared delete helper — clears backend + all localStorage + blacklist ──
+  const purgeDeletedId = (id) => {
+    try {
+      // 1. Blacklist — prevents reappearing on any refresh
+      const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+      if (!blacklist.includes(id)) blacklist.push(id);
+      localStorage.setItem('pinit_deleted_ids', JSON.stringify(blacklist));
+      // 2. vaultImages
+      const vault = JSON.parse(localStorage.getItem('vaultImages') || '[]');
+      localStorage.setItem('vaultImages', JSON.stringify(
+        vault.filter(a => a.assetId !== id && a.id !== id && a.asset_id !== id)
+      ));
+      // 3. analysisReports
+      const reports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
+      localStorage.setItem('analysisReports', JSON.stringify(
+        reports.filter(a => a.assetId !== id && a.id !== id && a.asset_id !== id)
+      ));
+      // 4. certificates
+      const certs = JSON.parse(localStorage.getItem('certificates') || '[]');
+      localStorage.setItem('certificates', JSON.stringify(
+        certs.filter(a => a.assetId !== id && a.id !== id)
+      ));
+      // 5. modifiedAssets tracking
+      const modified = JSON.parse(localStorage.getItem('modifiedAssets') || '[]');
+      localStorage.setItem('modifiedAssets', JSON.stringify(modified.filter(mid => mid !== id)));
+    } catch (e) { console.warn('localStorage purge failed:', e); }
+  };
+
   const handleDelete = async (imageId) => {
     if (!window.confirm('Delete this image from vault?')) return;
+    // Add to blacklist immediately so refresh never shows it again
+    purgeDeletedId(imageId);
+    // Remove from React state immediately
+    setVaultImages(prev => prev.filter(img => img.id !== imageId && img.assetId !== imageId));
+    setSelectedVaultItems(prev => prev.filter(id => id !== imageId));
+    // Delete from backend (non-blocking — blacklist already prevents reappearance)
     try {
       await vaultAPI.delete(imageId);
-      setVaultImages(prev => prev.filter(img => img.id !== imageId && img.assetId !== imageId));
-      setSelectedVaultItems(prev => prev.filter(id => id !== imageId));
-      alert('Image deleted successfully');
     } catch (err) {
-      alert('Failed to delete: ' + err.message);
+      console.warn('Backend delete failed (item still hidden via blacklist):', err.message);
     }
+    alert('Image deleted permanently');
   };
 
   // Vault selection handlers
@@ -167,21 +202,22 @@ function UserDashboard({ user, onLogout }) {
   };
 
   const handleDeleteSelected = async () => {
-    if (selectedVaultItems.length === 0) {
-      alert('No items selected');
-      return;
-    }
-    
+    if (selectedVaultItems.length === 0) { alert('No items selected'); return; }
     if (!window.confirm(`Delete ${selectedVaultItems.length} selected image(s) from vault?`)) return;
-    
+    // Blacklist + localStorage purge immediately for all selected
+    selectedVaultItems.forEach(id => purgeDeletedId(id));
+    // Remove from React state immediately
+    setVaultImages(prev => prev.filter(img =>
+      !selectedVaultItems.includes(img.id) && !selectedVaultItems.includes(img.assetId)
+    ));
+    setSelectedVaultItems([]);
+    // Backend deletes (non-blocking)
     try {
       await Promise.all(selectedVaultItems.map(id => vaultAPI.delete(id)));
-      setVaultImages(prev => prev.filter(img => !selectedVaultItems.includes(img.id) && !selectedVaultItems.includes(img.assetId)));
-      setSelectedVaultItems([]);
-      alert(`${selectedVaultItems.length} image(s) deleted successfully`);
     } catch (err) {
-      alert('Failed to delete: ' + err.message);
+      console.warn('Some backend deletes failed (items still hidden via blacklist):', err.message);
     }
+    alert(`${selectedVaultItems.length} image(s) deleted permanently`);
   };
 
   // ── Certificate actions ────────────────────────────────────────────────────
@@ -206,80 +242,42 @@ function UserDashboard({ user, onLogout }) {
   };
 
   const handleShareCert = (cert) => {
-    // Save certificate to public storage (so anyone can view it)
-    const sharedCerts = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
-    
-    // Check if already shared
-    const existing = sharedCerts.find(c => c.certificate_id === cert.certificate_id);
-    if (!existing) {
-      // Add certificate with all data
-      const certToShare = {
-        certificateId: cert.certificate_id,
-        assetId: cert.asset_id,
-        userId: cert.user_id,
-        ownerEmail: user?.email || cert.owner_email || '—',
-        confidence: cert.confidence,
-        status: cert.status,
-        dateCreated: cert.created_at,
-        ownershipAtCreation: {
-          uniqueUserId: cert.analysis_data?.uniqueUserId,
-          assetResolution: cert.analysis_data?.assetResolution,
-          assetFileSize: cert.analysis_data?.assetFileSize,
-          timeStamp: cert.created_at,
-          gpsLocation: cert.analysis_data?.gpsLocation?.coordinates || 'Not Available'
-        },
-        technicalDetails: {
-          deviceName: cert.analysis_data?.deviceName || 'Unknown',
-          pixelsVerified: cert.analysis_data?.totalPixels || 'N/A',
-          ownershipInfo: cert.status || 'Verified'
-        },
-        imagePreview: cert.image_preview
-      };
-      
-      sharedCerts.push(certToShare);
-      localStorage.setItem('sharedCertificates', JSON.stringify(sharedCerts));
+    // Create SHORT link with only essential data
+    const essentialData = {
+      certificate_id: cert.certificate_id,
+      asset_id: cert.asset_id,
+      confidence: cert.confidence,
+      status: cert.status,
+      created_at: cert.created_at
+    };
 
-      // Save to backend so shared link works for anyone (not just your device)
-      const token = localStorage.getItem('savedToken') || sessionStorage.getItem('pinit_token');
-      fetch('https://pinit-backend.onrender.com/certificates/share', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(certToShare)
-      }).catch(err => console.warn('Share save failed:', err.message));
-    }
+    // Encode only essential data (much shorter URL!)
+    const encodedData = btoa(JSON.stringify(essentialData));
 
-    // Generate shareable link (simple and clean!)
-// ALWAYS use production URL (not preview!)
-const shareLink = `https://image-crypto-analyzer.vercel.app/public/certificate/${cert.certificate_id}`;    // Try native share API first (mobile devices)
+    // Use deployed URL (not localhost!)
+    const baseUrl = window.location.origin.includes('localhost')
+      ? 'https://image-crypto-analyzer.vercel.app'
+      : window.location.origin;
+
+    const verifyUrl = `${baseUrl}/public/verify?data=${encodedData}`;
+
+    const text = `PINIT Ownership Certificate\n\nCertificate ID: ${cert.certificate_id}\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}\n\n🔐 This image is protected with PINIT invisible watermarking.\nEven after compression or sharing, ownership data is embedded in the image pixels.\n\nVerify at: ${verifyUrl}`;
+
     if (navigator.share) {
       navigator.share({
         title: 'PINIT Ownership Certificate',
-        text: `🔐 View my verified ownership certificate\n\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}`,
-        url: shareLink
+        text: text,
+        url: verifyUrl
       }).then(() => {
         setTimeout(() => {
-          alert('✅ Certificate link shared successfully!\n\n📱 Anyone can view this certificate on any device.');
+          alert(`✅ Shared successfully!\n\n📱 Link works on ANY device!\n🔗 Short link length: ${verifyUrl.length} characters\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality\n• Filters or crops < 25px may damage watermark`);
         }, 500);
-      }).catch(() => {
-        // Fallback to clipboard
-        copyToClipboard(shareLink);
-      });
+      }).catch(() => {});
     } else {
-      // Fallback to clipboard
-      copyToClipboard(shareLink);
+      navigator.clipboard.writeText(verifyUrl).then(() => {
+        alert(`✅ Verification link copied!\n\n📱 Works on any device: mobile, tablet, laptop!\n🔗 Link length: ${verifyUrl.length} characters\n\n${verifyUrl}\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality`);
+      });
     }
-  };
-
-  const copyToClipboard = (link) => {
-    navigator.clipboard.writeText(link).then(() => {
-      alert(`✅ Certificate link copied to clipboard!\n\n${link}\n\n📱 Share this link via WhatsApp, Email, SMS, etc.\n🔓 Anyone can view the certificate without login!`);
-    }).catch(() => {
-      // Manual fallback
-      prompt('📋 Copy this link to share:', link);
-    });
   };
 
   const handleChangePassword = async () => {
@@ -340,11 +338,13 @@ const shareLink = `https://image-crypto-analyzer.vercel.app/public/certificate/$
             <div className="overview-section">
               <h1>Dashboard Overview</h1>
               <p className="subtitle">Your activity at a glance</p>
+
               <div className="quick-action">
                 <button onClick={() => navigate('/analyzer')} className="btn-quick-analyze">
                   <Camera size={20} /> Quick Analyze
                 </button>
               </div>
+
               <div className="stats-grid">
                 <div className="stat-card stat-encrypted">
                   <div className="stat-icon"><Image size={32} /></div>

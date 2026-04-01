@@ -28,12 +28,13 @@ function AdminDashboard({ user, onLogout }) {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
 
   const navigate = useNavigate();
 
   const loadStats    = useCallback(async () => { try { const res = await adminAPI.getStats();      setStats(res);             } catch (err) { console.error(err); } }, []);
   const loadUsers    = useCallback(async () => { try { const res = await adminAPI.getUsers();      setUsers(res.users || []); } catch (err) { console.error(err); } }, []);
-  const loadAssets   = useCallback(async () => { try { const res = await adminAPI.getAllVault();   setAssets(res.assets || []); setSelectedAssets([]); setSelectAll(false); } catch (err) { console.error(err); } }, []);
+  const loadAssets   = useCallback(async () => { try { const res = await adminAPI.getAllVault(); const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]'); const filtered = (res.assets || []).filter(a => !blacklist.includes(a.asset_id) && !blacklist.includes(a.id) && !blacklist.includes(a.assetId)); setAssets(filtered); setSelectedAssets([]); setSelectAll(false); } catch (err) { console.error(err); } }, []);
   const loadReports  = useCallback(async () => { try { const res = await adminAPI.getAllReports(); setReports(res.reports || []); } catch (err) { console.error(err); } }, []);
   const loadAuditLog = useCallback(async () => { try { const res = await adminAPI.getAuditLog();  setAuditLog(res.logs || []); } catch (err) { console.error(err); } }, []);
 
@@ -99,6 +100,15 @@ function AdminDashboard({ user, onLogout }) {
     });
   };
 
+  // ── Shared blacklist helper — stores all ID variants ─────────────────────
+  const addToDeleteBlacklist = (ids) => {
+    try {
+      const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+      ids.forEach(id => { if (id && !blacklist.includes(id)) blacklist.push(id); });
+      localStorage.setItem('pinit_deleted_ids', JSON.stringify(blacklist));
+    } catch (e) { console.warn('Blacklist update failed:', e); }
+  };
+
   // Bulk delete function
   const deleteBulkAssets = async () => {
     if (selectedAssets.length === 0) return;
@@ -108,6 +118,9 @@ function AdminDashboard({ user, onLogout }) {
     }
 
     setDeleting(true);
+
+    // Blacklist immediately so refresh never shows deleted items
+    addToDeleteBlacklist(selectedAssets);
 
     // Delete from backend
     for (const id of selectedAssets) {
@@ -141,6 +154,7 @@ function AdminDashboard({ user, onLogout }) {
     setSelectAll(false);
     setDeleting(false);
     await loadStats();
+    await loadAssets();
 
     alert(`Successfully deleted ${selectedAssets.length} asset${selectedAssets.length > 1 ? 's' : ''} permanently from all locations!`);
   };
@@ -149,6 +163,9 @@ function AdminDashboard({ user, onLogout }) {
   const deleteAsset = async (asset) => {
     setDeleting(true);
     const id = asset.asset_id || asset.id;
+
+    // Blacklist ALL id variants immediately
+    addToDeleteBlacklist([id, asset.asset_id, asset.id, asset.assetId].filter(Boolean));
 
     // Delete from backend
     try {
@@ -179,6 +196,7 @@ function AdminDashboard({ user, onLogout }) {
     setDeleting(false);
     setDeleteConfirm(null);
     await loadStats();
+    await loadAssets();
 
     alert('Asset deleted permanently from all locations!');
   };
@@ -375,30 +393,55 @@ function AdminDashboard({ user, onLogout }) {
         <div className="users-section">
           <div className="section-header">
             <div><h1>User Management</h1><p className="subtitle">Total Users: {users.length}</p></div>
-            <button onClick={loadUsers} className="btn-refresh"><RefreshCw size={16} /> Refresh</button>
+            <button onClick={() => window.location.reload()} className="btn-refresh"><RefreshCw size={16} /> Refresh</button>
           </div>
-          {users.length > 0 ? (
-            <table className="admin-table">
-              <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Signup Date</th><th>Proof Count</th><th>Plan</th><th>Status</th><th>Actions</th></tr></thead>
-              <tbody>{users.map((u,i) => (
-                <tr key={i}>
-                  <td>{u.username}</td><td>{u.email}</td><td>{u.phone||'—'}</td>
-                  <td>{formatDate(u.created_at)}</td><td>{u.proof_count||0}</td>
-                  <td><span className="role-badge user">Free</span></td>
-                  <td><span className={`status-dot ${u.is_active ? 'active' : 'inactive'}`}>{u.is_active ? 'Active' : 'Suspended'}</span></td>
-                  <td>
-                    <div className="action-buttons">
-                      <button onClick={() => setProofUser(u)} className="btn-action btn-view">Proofs</button>
-                      {u.is_active
-                        ? <button onClick={() => handleSuspend(u.id)} className="btn-action btn-delete" disabled={u.role==='admin'}>Block</button>
-                        : <button onClick={() => handleActivate(u.id)} className="btn-action btn-view">Activate</button>}
-                      <button onClick={() => setSelectedUser(u)} className="btn-action btn-view">Profile</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}</tbody>
-            </table>
-          ) : <div className="empty-state">No users found</div>}
+          {/* Search bar — only addition, no layout changes */}
+          <div style={{marginBottom:'16px', display:'flex', alignItems:'center', gap:'8px', background:'#f9fafb', border:'1px solid #e5e7eb', borderRadius:'8px', padding:'8px 12px'}}>
+            <svg width="16" height="16" fill="none" stroke="#9ca3af" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <input
+              type="text"
+              placeholder="Search by name, email, or phone..."
+              value={userSearchQuery}
+              onChange={e => setUserSearchQuery(e.target.value)}
+              style={{border:'none', outline:'none', background:'transparent', fontSize:'14px', color:'#374151', width:'100%'}}
+            />
+            {userSearchQuery && (
+              <button onClick={() => setUserSearchQuery('')} style={{border:'none', background:'none', cursor:'pointer', color:'#9ca3af', fontSize:'16px', lineHeight:1}}>✕</button>
+            )}
+          </div>
+
+          {(() => {
+            const q = userSearchQuery.toLowerCase();
+            const filteredUsers = q
+              ? users.filter(u =>
+                  (u.username || '').toLowerCase().includes(q) ||
+                  (u.email    || '').toLowerCase().includes(q) ||
+                  (u.phone    || '').toLowerCase().includes(q)
+                )
+              : users;
+            return filteredUsers.length > 0 ? (
+              <table className="admin-table">
+                <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Signup Date</th><th>Proof Count</th><th>Plan</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>{filteredUsers.map((u,i) => (
+                  <tr key={i}>
+                    <td>{u.username}</td><td>{u.email}</td><td>{u.phone||'—'}</td>
+                    <td>{formatDate(u.created_at)}</td><td>{u.proof_count||0}</td>
+                    <td><span className="role-badge user">Free</span></td>
+                    <td><span className={`status-dot ${u.is_active ? 'active' : 'inactive'}`}>{u.is_active ? 'Active' : 'Suspended'}</span></td>
+                    <td>
+                      <div className="action-buttons">
+                        <button onClick={() => setProofUser(u)} className="btn-action btn-view">Proofs</button>
+                        {u.is_active
+                          ? <button onClick={() => handleSuspend(u.id)} className="btn-action btn-delete" disabled={u.role==='admin'}>Block</button>
+                          : <button onClick={() => handleActivate(u.id)} className="btn-action btn-view">Activate</button>}
+                        <button onClick={() => setSelectedUser(u)} className="btn-action btn-view">Profile</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : <div className="empty-state">{userSearchQuery ? `No users match "${userSearchQuery}"` : 'No users found'}</div>;
+          })()}
 
           {selectedUser && (
             <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
@@ -696,7 +739,7 @@ function AdminDashboard({ user, onLogout }) {
         <div className="analytics-section">
           <div className="section-header">
             <div><h1>Analytics</h1><p className="subtitle">System usage overview</p></div>
-            <button onClick={loadAll} className="btn-refresh"><RefreshCw size={16} /> Refresh</button>
+            <button onClick={() => window.location.reload()} className="btn-refresh"><RefreshCw size={16} /> Refresh</button>
           </div>
           <div className="analytics-grid">
             <div className="analytics-card"><h3>User Activity</h3>

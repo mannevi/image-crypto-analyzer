@@ -1079,7 +1079,10 @@ function AssetTrackingPage() {
         blockchainAnchor:   a.blockchain_anchor   || a.blockchainAnchor,
       }));
 
-      const combined = [...normalisedVault, ...extras];
+      const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+      const combined = [...normalisedVault, ...extras].filter(
+        a => !blacklist.includes(a.assetId) && !blacklist.includes(a.asset_id) && !blacklist.includes(a.id)
+      );
       const hashGroups = {};
       combined.forEach(a => {
         const key = a.fileHash || a.file_hash || a.assetId || a.id;
@@ -1104,10 +1107,12 @@ function AssetTrackingPage() {
       }
     } catch (err) {
       console.warn('API unavailable, using localStorage:', err.message);
+      const blacklistFb = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
       const vault   = JSON.parse(localStorage.getItem('vaultImages') || '[]');
       const reports = JSON.parse(localStorage.getItem('analysisReports') || '[]');
       const vaultIds = new Set(vault.map(v => v.assetId));
-      const combined = [...vault, ...reports.filter(r => !vaultIds.has(r.assetId))];
+      const combined = [...vault, ...reports.filter(r => !vaultIds.has(r.assetId))]
+        .filter(a => !blacklistFb.includes(a.assetId) && !blacklistFb.includes(a.id));
       const hashGroups = {};
       combined.forEach(a => { const k=a.fileHash||a.assetId||a.id; hashGroups[k]=(hashGroups[k]||0)+1; });
       const withMeta = combined.map(a => ({ ...a, versionCount:hashGroups[a.fileHash||a.assetId||a.id]||1, isDuplicate:(hashGroups[a.fileHash||a.assetId||a.id]||1)>1 }));
@@ -1150,7 +1155,15 @@ function AssetTrackingPage() {
 
   const deleteAsset = async (asset) => {
     setDeleting(true);
-    const id = asset.assetId || asset.id;
+    const id = asset.assetId || asset.asset_id || asset.id;
+    // Blacklist ALL id variants immediately
+    try {
+      const blacklist = JSON.parse(localStorage.getItem('pinit_deleted_ids') || '[]');
+      [id, asset.assetId, asset.asset_id, asset.id]
+        .filter(Boolean)
+        .forEach(v => { if (!blacklist.includes(v)) blacklist.push(v); });
+      localStorage.setItem('pinit_deleted_ids', JSON.stringify(blacklist));
+    } catch (e) { console.warn(e); }
     try { const { vaultAPI } = await import('../api/client'); await vaultAPI.delete(id); } catch (err) { console.warn('Backend delete failed:', err); }
     try {
       ['vaultImages','analysisReports'].forEach(key => {
@@ -1162,6 +1175,7 @@ function AssetTrackingPage() {
     setFilteredAssets(prev => prev.filter(a => (a.assetId||a.id) !== id));
     setDeleting(false); setDeleteConfirm(null);
     alert('Asset deleted permanently.');
+    loadAssets(); // re-apply blacklist filter cleanly
   };
 
   const openCompare = (asset) => {

@@ -64,7 +64,7 @@ const saveToVault = (imageData, fileName, userId, fileSize, imageBlob) => {
   try {
     const canvas = document.createElement('canvas');
     const img = new Image();
-      img.onload = async () => {
+    img.onload = () => {
       const size = 80;
       canvas.width = size;
       canvas.height = size;
@@ -221,29 +221,61 @@ const getPublicIP = async () => {
 };
 
 // GPS Location Helper Function
+// On Capacitor APK: uses @capacitor/geolocation plugin (requires Android manifest permission)
+// On browser: uses standard navigator.geolocation
 const getGPSLocation = () => {
   return new Promise((resolve) => {
-    if (!navigator.geolocation) {
-      resolve({ available: false, coordinates: null, address: 'GPS not supported' });
+
+    const buildResult = (latitude, longitude) => resolve({
+      available: true,
+      latitude,
+      longitude,
+      coordinates: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+      mapsUrl: `https://www.google.com/maps?q=${latitude},${longitude}`
+    });
+
+    const onFail = () => resolve({ available: false, coordinates: null, address: 'Location unavailable' });
+
+    // ── Capacitor APK path ────────────────────────────────────────────────────
+    const isCapacitor = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    if (isCapacitor) {
+      // Dynamically import Capacitor Geolocation plugin
+      import('@capacitor/geolocation').then(({ Geolocation }) => {
+        // Request permission first (required on Android)
+        Geolocation.requestPermissions().then(() => {
+          Geolocation.getCurrentPosition({
+            enableHighAccuracy: true,
+            timeout: 10000,
+          }).then((pos) => {
+            buildResult(pos.coords.latitude, pos.coords.longitude);
+          }).catch(onFail);
+        }).catch(() => {
+          // Permission denied — try without requesting (might already be granted)
+          Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 })
+            .then((pos) => buildResult(pos.coords.latitude, pos.coords.longitude))
+            .catch(onFail);
+        });
+      }).catch(() => {
+        // Plugin not installed — fall through to browser API
+        useBrowserGPS();
+      });
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        resolve({
-          available: true,
-          latitude: latitude,
-          longitude: longitude,
-          coordinates: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
-          mapsUrl: `https://www.google.com/maps?q=${latitude},${longitude}`
-        });
-      },
-      (error) => {
-        resolve({ available: false, coordinates: null, address: 'Location unavailable' });
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+    // ── Browser path ─────────────────────────────────────────────────────────
+    useBrowserGPS();
+
+    function useBrowserGPS() {
+      if (!navigator.geolocation) {
+        resolve({ available: false, coordinates: null, address: 'GPS not supported' });
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (position) => buildResult(position.coords.latitude, position.coords.longitude),
+        onFail,
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
   });
 };
 
@@ -956,7 +988,10 @@ const extractUUIDAdvanced = (imageData) => {
 
 const extractIMGCRYPT3 = (bits) => {
   const total   = bits.length;
-  const maxScan = Math.min(total - 800, 3200);
+  // BUG FIX: old formula `total - 800` went negative for small images (e.g. 25x25 B-channel
+  // has 625 bits → maxScan was 0, so only offset 0 was ever tried).
+  // We only need enough bits after the offset to read the header + a few chars, not 800.
+  const maxScan = Math.min(Math.max(0, total - 80), 3200);
   const maxRead = Math.min(500, Math.floor(total / 8));
   for (let off = 0; off <= maxScan; off += 8) {
     let text = '';
@@ -991,11 +1026,33 @@ const parseIMGCRYPT3Msg = (text) => {
 };
 
 const buildResultFromUserId = (userId, data, imgW) => {
-  // Try B channel for full metadata first
+  // Try B channel for full metadata — but only trust it if userId matches tile-found userId.
+  // BUG FIX: normalize both sides before comparing. The tile method strips hyphens at embed
+  // and restores them at extract (36-char UUID). The B channel stores the original userId
+  // (also 36-char with hyphens). For OLD images embedded before hyphen-stripping was added,
+  // the tile returns a truncated 32-char string with hyphens still in it, while B channel
+  // has the full string — they would never match with ===. Normalize by stripping hyphens
+  // from both sides so old and new embedded images both compare correctly.
+  const normalizeId = (id) => (id || '').replace(/-/g, '').toLowerCase();
   const bBits = [];
   for (let idx = 0; idx < data.length; idx += 4) bBits.push(data[idx + 2] & 1);
   const full = extractIMGCRYPT3(bBits);
-  if (full) return full;
+  if (full && normalizeId(full.userId) === normalizeId(userId)) return { ...full, userId };  // ← tile userId is authoritative (hyphen-restored)
+  if (full && normalizeId(full.userId) !== normalizeId(userId)) {
+    // B channel gave different userId — trust tile method, but enrich with B channel metadata
+    return { found: true, userId,
+      gps: full.gps,
+      timestamp: full.timestamp,
+      deviceId: full.deviceId,
+      deviceName: full.deviceName,
+      ipAddress: full.ipAddress,
+      deviceSource: full.deviceSource || 'Unknown',
+      ipSource: full.ipSource || 'Unknown',
+      gpsSource: full.gpsSource || 'Unknown',
+      originalResolution: full.originalResolution || null,
+      confidence: 'High' };
+  }
+  // B channel not available (small crop) — return tile-found UUID with no metadata
   return { found: true, userId,
     gps: { available: false, coordinates: null, mapsUrl: null, source: 'Unknown' },
     timestamp: null, deviceId: null, deviceName: null, ipAddress: null,
@@ -1022,6 +1079,7 @@ const buildResult = (m) => {
     gpsSource: m.gpsSource || 'Unknown', originalResolution: m.originalResolution,
     confidence: 'High' };
 };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED METRICS BUILDER  (add this just above classifyImage)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1382,183 +1440,229 @@ const classifyImage = (
   };
 };
 
-// ============================================
-// REPORT GENERATION (PNG Image)
-// ============================================
+// ── Save to device: direct gallery (APK) or download (browser) ───────────────
+const saveFileToDevice = async (dataUrl, fileName) => {
+  const isCapacitor = !!(
+    window.Capacitor &&
+    window.Capacitor.isNativePlatform &&
+    window.Capacitor.isNativePlatform()
+  );
 
-const generateReport = (report, imageData) => {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-
-  canvas.width = 595;
-  canvas.height = 842;
-
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // Header
-  ctx.fillStyle = '#2563eb';
-  ctx.fillRect(0, 0, canvas.width, 80);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 24px Arial';
-  ctx.fillText('IMAGE ANALYSIS REPORT', 40, 50);
-
-  // Classification banner
-  const confidenceColor = report.confidence > 90 ? '#10b981' : report.confidence > 70 ? '#fbbf24' : '#ef4444';
-  ctx.fillStyle = confidenceColor;
-  ctx.fillRect(0, 80, canvas.width, 50);
-  ctx.fillStyle = '#000000';
-  ctx.font = 'bold 16px Arial';
-  ctx.fillText(report.detectedCase, 40, 105);
-  ctx.font = '12px Arial';
-  ctx.fillText('Confidence: ' + report.confidence + '%', 40, 122);
-
-  let y = 160;
-
-  // Ownership section
-  ctx.fillStyle = '#1e40af';
-  ctx.font = 'bold 16px Arial';
-  ctx.fillText('OWNERSHIP AT CREATION', 40, y);
-  y += 25;
-
-  ctx.fillStyle = '#000000';
-  ctx.font = '12px Arial';
-  const ownershipFields = [
-    ['Asset ID:', report.assetId],
-    ['Authorship Certificate ID:', report.authorshipCertificateId],
-    ['Unique User ID:', report.uniqueUserId],
-    ['Asset File Size:', report.assetFileSize],
-    ['Asset Resolution:', report.assetResolution],
-    ['User Encrypted Resolution:', report.userEncryptedResolution],
-    ['Time Stamp:', report.timestamp ? new Date(report.timestamp).toLocaleString() : 'Not Available'],
-    ['Capture Location:', report.captureLocationInfo],
-    ['GPS Location:', report.gpsLocation?.available ? report.gpsLocation.coordinates : 'Not Available']
-  ];
-
-  ownershipFields.forEach(function(field) {
-    const label = field[0];
-    const value = field[1];
-    ctx.font = 'bold 11px Arial';
-    ctx.fillText(label, 40, y);
-    ctx.font = '11px Arial';
-    const displayValue = String(value).length > 40 ? String(value).substring(0, 40) + '...' : String(value);
-    ctx.fillText(displayValue, 240, y);
-    y += 18;
-  });
-
-  y += 15;
-
-  // Technical section
-  ctx.fillStyle = '#1e40af';
-  ctx.font = 'bold 16px Arial';
-  ctx.fillText('TECHNICAL DETAILS', 40, y);
-  y += 25;
-
-  ctx.fillStyle = '#000000';
-  const technicalFields = [
-    ['Total Pixels:', report.totalPixels],
-    ['Pixels Verified:', report.pixelsVerifiedWithBiometrics],
-    ['Device Name:', report.deviceName],
-    ['Device ID:', report.deviceId],
-    ['IP Address:', report.ipAddress],
-    ['Ownership Info:', report.ownershipInfo],
-    ['Certificate:', report.authorshipCertificate],
-    ['Rotation:', report.rotationMessage || 'Not detected']
-  ];
-
-  technicalFields.forEach(function(field) {
-    const label = field[0];
-    const value = field[1];
-    ctx.font = 'bold 11px Arial';
-    ctx.fillText(label, 40, y);
-    ctx.font = '11px Arial';
-    const displayValue = String(value).length > 40 ? String(value).substring(0, 40) + '...' : String(value);
-    ctx.fillText(displayValue, 240, y);
-    y += 18;
-  });
-
-  // Classification reasoning
-  if (report.reasoning && report.reasoning.length > 0) {
-    y += 15;
-    ctx.fillStyle = '#1e40af';
-    ctx.font = 'bold 16px Arial';
-    ctx.fillText('CLASSIFICATION ANALYSIS', 40, y);
-    y += 25;
-
-    ctx.fillStyle = '#000000';
-    ctx.font = '11px Arial';
-    report.reasoning.forEach(function(reason) {
-      ctx.fillText('• ' + reason, 50, y);
-      y += 16;
-    });
-  }
-
-  // Analyzed Image Section
-  if (imageData) {
-    y += 20;
-
-    ctx.fillStyle = '#1e40af';
-    ctx.font = 'bold 16px Arial';
-    ctx.fillText('ANALYZED IMAGE', 40, y);
-    y += 20;
-
-    const img = new Image();
-    img.onload = function () {
-      const maxWidth = 500;
-      const maxHeight = 220;
-
-      let drawWidth = img.width;
-      let drawHeight = img.height;
-
-      const scale = Math.min(
-        maxWidth / drawWidth,
-        maxHeight / drawHeight,
-        1
-      );
-
-      drawWidth *= scale;
-      drawHeight *= scale;
-
-      ctx.drawImage(img, 40, y, drawWidth, drawHeight);
-
-      // Footer
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '10px Arial';
-      ctx.fillText(
-        'Report Generated: ' + new Date().toLocaleString(),
-        40,
-        825
-      );
-
-      // Save as PNG
-      canvas.toBlob((blob) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `analysis-report-${report.assetId}.png`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      });
-    };
-
-    img.src = imageData;
-    return;
-  }
-
-  // If no image, save immediately
-  canvas.toBlob((blob) => {
-    const url = URL.createObjectURL(blob);
+  if (!isCapacitor) {
+    // Browser — standard anchor download
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `analysis-report-${report.assetId}.png`;
+    a.href = dataUrl;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  });
+    return;
+  }
+
+  // APK — save directly to gallery, NO share sheet
+  try {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+
+    const base64  = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    const isPdf   = fileName.toLowerCase().endsWith('.pdf');
+    const tmpPath = `pinit_tmp_${Date.now()}_${fileName}`;
+
+    // Step 1: Write to cache (no permission needed)
+    await Filesystem.writeFile({
+      path:      tmpPath,
+      data:      base64,
+      directory: Directory.Cache,
+    });
+
+    // Step 2: Get real file URI
+    const { uri } = await Filesystem.getUri({
+      path:      tmpPath,
+      directory: Directory.Cache,
+    });
+
+    if (isPdf) {
+      // PDFs — save to Documents/PINIT (no gallery needed for PDFs)
+      try {
+        await Filesystem.writeFile({
+          path:      `PINIT/${fileName}`,
+          data:      base64,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+        alert('✅ Report saved to Documents/PINIT folder!\nOpen your Files app to find it.');
+      } catch (docErr) {
+        // Fallback: open with share sheet for PDFs only
+        const { Share } = await import('@capacitor/share');
+        await Share.share({ title: fileName, url: uri, dialogTitle: 'Save your report' });
+      }
+    } else {
+      // Images — save directly to Gallery using Media plugin
+      try {
+        const { Media } = await import('@capacitor-community/media');
+        await Media.savePhoto({ path: uri });
+        alert('✅ Image saved to your Gallery!');
+      } catch (mediaErr) {
+        // Media plugin failed — write directly to Pictures/PINIT
+        try {
+          await Filesystem.writeFile({
+            path:      `Pictures/PINIT/${fileName}`,
+            data:      base64,
+            directory: Directory.ExternalStorage,
+            recursive: true,
+          });
+          alert('✅ Image saved to Pictures/PINIT folder!\nOpen Gallery or Files app to find it.');
+        } catch (extErr) {
+          // Last resort — Documents
+          await Filesystem.writeFile({
+            path:      `PINIT/${fileName}`,
+            data:      base64,
+            directory: Directory.Documents,
+            recursive: true,
+          });
+          alert('✅ Image saved to Documents/PINIT folder!\nOpen Files app to find it.');
+        }
+      }
+    }
+
+    // Cleanup cache
+    Filesystem.deleteFile({ path: tmpPath, directory: Directory.Cache }).catch(() => {});
+
+  } catch (err) {
+    if (String(err).toLowerCase().includes('cancel')) return;
+    console.warn('Save error:', err);
+    alert('Could not save: ' + (err.message || 'Unknown error'));
+  }
 };
+
+const generateReport = (report, imageData) => {
+  const canvas = document.createElement('canvas');
+  const ctx    = canvas.getContext('2d');
+  canvas.width  = 595;
+  canvas.height = 842;
+
+  // White background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 595, 842);
+
+  // Blue header
+  ctx.fillStyle = '#2563eb';
+  ctx.fillRect(0, 0, 595, 75);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText('IMAGE ANALYSIS REPORT', 30, 45);
+  ctx.font = '10px Arial';
+  ctx.fillText('PINIT — Image Forensics & Provenance Platform', 30, 65);
+
+  // Confidence banner
+  const bannerColor = report.confidence > 90 ? '#10b981' : report.confidence > 70 ? '#fbbf24' : '#ef4444';
+  ctx.fillStyle = bannerColor;
+  ctx.fillRect(0, 75, 595, 44);
+  ctx.fillStyle = '#000';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText(String(report.detectedCase || ''), 30, 97);
+  ctx.font = '11px Arial';
+  ctx.fillText('Confidence: ' + (report.confidence || 0) + '%', 30, 113);
+
+  let y = 140;
+
+  const section = (title) => {
+    ctx.fillStyle = '#1e40af';
+    ctx.font = 'bold 12px Arial';
+    ctx.fillText(title, 30, y); y += 5;
+    ctx.fillStyle = '#d1d5db';
+    ctx.fillRect(30, y, 535, 1); y += 12;
+    ctx.fillStyle = '#111827';
+  };
+
+  const field = (label, value) => {
+    ctx.font = 'bold 9.5px Arial';
+    ctx.fillStyle = '#374151';
+    ctx.fillText(String(label), 30, y);
+    ctx.font = '9.5px Arial';
+    ctx.fillStyle = '#111827';
+    const v = String(value || '—');
+    ctx.fillText(v.length > 58 ? v.substring(0, 58) + '...' : v, 200, y);
+    y += 15;
+  };
+
+  section('OWNERSHIP AT CREATION');
+  field('Asset ID:', report.assetId);
+  field('Authorship Certificate ID:', report.authorshipCertificateId);
+  field('Unique User ID:', report.uniqueUserId);
+  field('Asset File Size:', report.assetFileSize);
+  field('Asset Resolution:', report.assetResolution);
+  field('User Encrypted Resolution:', report.userEncryptedResolution);
+  field('Time Stamp:', report.timestamp ? new Date(report.timestamp).toLocaleString() : 'Not Available');
+  field('Capture Location:', report.captureLocationInfo);
+  field('GPS Location:', report.gpsLocation?.available ? report.gpsLocation.coordinates : 'Not Available');
+  y += 8;
+
+  section('TECHNICAL DETAILS');
+  field('Total Pixels:', report.totalPixels);
+  field('Pixels Verified:', report.pixelsVerifiedWithBiometrics);
+  field('Device Name:', report.deviceName);
+  field('Device ID:', report.deviceId);
+  field('IP Address:', report.ipAddress);
+  field('Ownership Info:', report.ownershipInfo);
+  field('Certificate:', report.authorshipCertificate);
+  field('Rotation:', report.rotationMessage || 'Not detected');
+  field('Image Cropped:', report.cropInfo?.isCropped
+    ? 'Yes — ' + report.cropInfo.originalResolution + ' to ' + report.cropInfo.currentResolution + ' (' + report.cropInfo.remainingPercentage + ')'
+    : 'No');
+  y += 8;
+
+  if (report.reasoning && report.reasoning.length > 0) {
+    section('CLASSIFICATION ANALYSIS');
+    ctx.font = '9.5px Arial';
+    ctx.fillStyle = '#111827';
+    report.reasoning.forEach(function(r) {
+      ctx.fillText('• ' + String(r), 40, y); y += 14;
+    });
+    y += 4;
+  }
+
+  // Footer
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '8.5px Arial';
+  ctx.fillText('Generated: ' + new Date().toLocaleString() + '  |  PINIT Image Forensics', 30, 835);
+
+  // Save as PDF via jsPDF, fallback to PNG
+  const doSave = (canvasEl) => {
+    const pngUrl  = canvasEl.toDataURL('image/png');
+    const pdfName = 'PINIT-report-' + (report.assetId || Date.now()) + '.pdf';
+
+    import('jspdf').then(function(mod) {
+      const JsPDF = mod.jsPDF || mod.default || (mod.default && mod.default.jsPDF);
+      const pdf   = new JsPDF({ unit: 'px', format: [595, 842], orientation: 'portrait' });
+      pdf.addImage(pngUrl, 'PNG', 0, 0, 595, 842);
+      const pdfUrl = pdf.output('datauristring');
+      saveFileToDevice(pdfUrl, pdfName);
+    }).catch(function() {
+      // jsPDF not installed — save as PNG
+      saveFileToDevice(pngUrl, 'PINIT-report-' + (report.assetId || Date.now()) + '.png');
+    });
+  };
+
+  if (imageData) {
+    y += 8;
+    ctx.fillStyle = '#1e40af';
+    ctx.font = 'bold 12px Arial';
+    ctx.fillText('ANALYZED IMAGE', 30, y); y += 12;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload  = function() {
+      const mw = 520, mh = 150;
+      const sc = Math.min(mw / img.width, mh / img.height, 1);
+      ctx.drawImage(img, 30, y, img.width * sc, img.height * sc);
+      doSave(canvas);
+    };
+    img.onerror = function() { doSave(canvas); };
+    img.src = imageData;
+    return;
+  }
+  doSave(canvas);
+};
+
 
 // ============================================
 // MAIN COMPONENT
@@ -1574,7 +1678,7 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
   const [userId, setUserId] = useState(
     localStorage.getItem('userUUID') || ''
   );
-  const [encryptedImage, setEncryptedImage] = useState(null);
+  const [encryptedImage, setEncryptedImage] = useState(null); // base64 dataURL (works in Capacitor WebView)
   const [encryptedFileName, setEncryptedFileName] = useState('encrypted-image.png');
   const [analysisReport, setAnalysisReport] = useState(null);
   const [showDeviceDetails, setShowDeviceDetails] = useState(false);
@@ -1791,8 +1895,9 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
     // Compute SHA-256 hash of the original file immediately
     const sha256Hash = await computeSHA256(selectedFile);
 
-    // Cleanup previous encrypted image
+    // Cleanup previous encrypted image URL
     if (encryptedImage) {
+      URL.revokeObjectURL(encryptedImage);
       setEncryptedImage(null);
     }
 
@@ -1852,12 +1957,16 @@ const ImageCryptoAnalyzer = ({ user, onLogout }) => {
       ipInfo = { ip: ipAddress, source: 'Encrypting Device' };
     }
 
-      const img = new Image();
-       img.onload = async () => {
+    const img = new Image();
+    img.onload = async () => {
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
+      // BUG FIX: willReadFrequently prevents the browser from applying lossy
+      // GPU-accelerated compositing. Without this, getImageData/putImageData on
+      // some browsers silently alters pixel values, corrupting the embedded LSBs
+      // before they are ever saved to the PNG blob.
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(img, 0, 0);
 
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1888,6 +1997,7 @@ canvas.toBlob((blob) => {
           setEncryptedImage(base64Url);
         };
         reader2.readAsDataURL(blob);
+
         setProcessing(false);
 
         // ── Generate asset ID + timestamp filename ──────────────────────────
@@ -1920,7 +2030,7 @@ canvas.toBlob((blob) => {
           } catch (e) {
             console.warn('SHA-256 of encrypted blob failed, falling back to original SHA:', e);
           }
-          
+
           // ACTUALLY save to backend vault API
           import('../api/client').then(({ vaultAPI }) => {
             const vaultPayload = {
@@ -1943,7 +2053,7 @@ canvas.toBlob((blob) => {
               gps_source:         gpsData.source || null,
               ip_address:         ipInfo.ip || null,
               device_name:        deviceInfo.deviceName || null,
-			};
+            };
             
             console.log('🔵 Sending to vault:', vaultPayload);
             
@@ -1985,7 +2095,9 @@ canvas.toBlob((blob) => {
   // Rotate canvas by specified degrees (90, 180, 270)
   const rotateCanvas = (sourceCanvas, degrees) => {
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+    // BUG FIX: willReadFrequently here prevents lossy pixel rounding when
+    // getImageData is called on the rotated canvas inside extractUUIDWithRotation.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     // For 90° and 270°, swap width and height
     if (degrees === 90 || degrees === 270) {
@@ -2091,6 +2203,7 @@ const saveReportToLocalStorage = (report, userInfo) => {
     console.error('Error saving report:', error);
     }
 };
+
    // ── Integrity status helper ─────────────────────────────────────────────────
 // Called once when building the report. The result flows into both save paths.
 //   uuidFound        — did UUID extraction succeed?
@@ -2100,6 +2213,7 @@ const saveReportToLocalStorage = (report, userInfo) => {
   if (uuidFound && hasCropMismatch)  return 'Possible modification detected';
   return 'Unprotected image';
   };
+
   // Save analysis to Track Assets (admin tracking system)
   const saveToTrackAssets = (report, imagePreview) => {
     try {
@@ -2117,6 +2231,10 @@ const saveReportToLocalStorage = (report, userInfo) => {
           uploaded_size:       report.assetFileSize || '0 KB',
           original_capture_time: report.timestamp ? new Date(report.timestamp).toISOString() : null,
           modified_file_time:    new Date().toISOString(),
+          is_cropped:          report.cropInfo?.isCropped || false,
+          crop_original_resolution: report.cropInfo?.originalResolution || null,
+          crop_current_resolution:  report.cropInfo?.currentResolution  || null,
+          crop_remaining_percentage: report.cropInfo?.remainingPercentage || null,
         }).then(() => {
           console.log('✅ Saved to Track Assets:', report.assetId);
         }).catch(err => {
@@ -2155,10 +2273,30 @@ const saveReportToLocalStorage = (report, userInfo) => {
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
+      // BUG FIX (Bug 1): Always use willReadFrequently so the browser doesn't
+      // apply lossy compositing shortcuts. This is critical for LSB steganography —
+      // without it, some browsers silently quantise pixel values when drawing JPEG
+      // sources, which flips LSBs and breaks the CRC-validated tile extraction
+      // (especially fatal on small 25x25 crops where only 4–9 votes back each bit).
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(img, 0, 0);
 
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      // BUG FIX (Bug 1 continued): If the source file is JPEG, the drawImage above
+      // has already applied JPEG decompression artifacts to the canvas pixels. We
+      // cannot recover exact LSBs from a JPEG-compressed steganographic image. Warn
+      // early so the failure is visible in the console rather than a silent false-negative.
+      const isLossy = selectedFile.type === 'image/jpeg' || selectedFile.type === 'image/jpg'
+        || selectedFile.type === 'image/webp';
+      if (isLossy) {
+        console.warn(
+          '⚠️ [Stego] Source file is lossy (' + selectedFile.type + '). ' +
+          'LSB steganography requires a lossless PNG. UUID extraction may fail, ' +
+          'especially for small crops. The embedded UUID is only recoverable if ' +
+          'the file was exported as PNG directly from the encrypt step.'
+        );
+      }
 
       const uuidResult = extractUUIDWithRotation(canvas);
 
@@ -2295,10 +2433,10 @@ const saveReportToLocalStorage = (report, userInfo) => {
           userEncryptedResolution:      originalResolution,
           timestamp:                    originalTimestamp,
           captureLocationInfo:          captureSource,
-          gpsLocation:                  uuidResult.gps,
+          gpsLocation:                  originalGPS,
           totalPixels:                  totalPixels.toLocaleString(),
           pixelsVerifiedWithBiometrics: Math.floor(totalPixels * 0.98).toLocaleString(),
-          deviceName:                   originalDeviceName,
+          deviceName:                   originalDeviceName2,
           deviceDetails:                getDeviceDetails(),
           deviceId:                     originalDeviceId,
           deviceSource:                 originalDeviceSrc,
@@ -2348,19 +2486,16 @@ const saveReportToLocalStorage = (report, userInfo) => {
           deviceSource:                 'Current Device',
           ipAddress:                    publicIP,
           ipSource:                     'Current Device',
-          authorshipCertificateId:      null,
+          authorshipCertificateId:      'Not Present',
           authorshipCertificate:        'Not Present',
-          ownershipInfo:                'No embedded UUID detected',
-          metadataSource:               'none',
-
-          uploadedResolution:  currentResolution,
-          uploadedSize:        (selectedFile.size / 1024).toFixed(2) + ' KB',
-          rotationDetected:    null,
-          rotationMessage:     'No rotation detected',
-          cropInfo:            null,
-          resolutionMismatch:  false,
-          integrityStatus:     'Unprotected image',
-
+          ownershipInfo:                'No UUID found',
+          rotationDetected:             uuidResult.rotationDetected,
+          rotationMessage:              uuidResult.rotationMessage,
+          cropInfo:                     null,
+          resolutionMismatch:           false,
+          integrityStatus:              computeIntegrityStatus(false, false),
+          uploadedResolution:           currentResolution,
+          uploadedSize:                 (selectedFile.size / 1024).toFixed(2) + ' KB',
           detectedCase:  classification.detectedCase,
           caseCode:      classification.caseCode,
           internalLabel: classification.internalLabel,
@@ -2373,10 +2508,20 @@ const saveReportToLocalStorage = (report, userInfo) => {
       }
 
       setAnalysisReport(report);
+
+      // Save to legacy analysisReports storage
       saveReportToLocalStorage(report, user);
+
       setProcessing(false);
-      updateForensicsStats('analyzed', { fileName: selectedFile.name });
+
+      // [NEW] Update dashboard stats via helper
+      updateForensicsStats('analyzed', {
+        fileName: selectedFile.name
+      });
+
+      // [NEW] Generate and save comprehensive certificate
       saveCertificate(report, preview);
+      // [NEW] Save to Track Assets for admin tracking
       saveToTrackAssets(report, preview);
     };
     img.src = preview;
@@ -2561,50 +2706,21 @@ const saveReportToLocalStorage = (report, userInfo) => {
                         <div>
                           <h3 className="font-semibold mb-2 text-gray-700">Encrypted Image</h3>
                           <img src={encryptedImage} alt="Encrypted" className="w-full rounded-lg border" />
+
+                          {/* Save encrypted image */}
                           <button
-                            onClick={async () => {
-                              try {
-                                // ── Capacitor APK: use Filesystem plugin ──
-                                if (window.Capacitor && window.Capacitor.isNativePlatform()) {
-                                  const { Filesystem, Directory } = await import('@capacitor/filesystem');
-                                  const { Share }      = await import('@capacitor/share');
-                                  // Strip data:image/png;base64, prefix
-                                  const base64Data = encryptedImage.replace(/^data:image\/\w+;base64,/, '');
-                                  const filePath   = encryptedFileName || 'encrypted-image.png';
-                                  // Write to device Documents folder
-                                  const result = await Filesystem.writeFile({
-                                    path      : filePath,
-                                    data      : base64Data,
-                                    directory : Directory.Documents,
-                                    recursive : true
-                                  });
-                                  // Share so user can also save to Gallery
-                                  await Share.share({
-                                    title : 'Encrypted Image',
-                                    text  : 'Your encrypted image with UUID embedded',
-                                    url   : result.uri,
-                                    dialogTitle: 'Save or Share Image'
-                                  });
-                                } else {
-                                  // ── Web browser: standard blob download ──
-                                  const a = document.createElement('a');
-                                  a.href     = encryptedImage;
-                                  a.download = encryptedFileName || 'encrypted-image.png';
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  document.body.removeChild(a);
-                                }
-                              } catch (err) {
-                                console.error('Download error:', err);
-                                // Final fallback — open in new tab so user can long-press save
-                                window.open(encryptedImage, '_blank');
+                            onClick={() => {
+                              if (encryptedImage) {
+                                saveFileToDevice(encryptedImage, encryptedFileName);
+                              } else {
+                                alert('Image not ready yet, please wait.');
                               }
                             }}
                             className="mt-3 block w-full bg-green-600 text-white px-4 py-2 rounded-lg text-center hover:bg-green-700"
-                            style={{border:'none',cursor:'pointer'}}
+                            style={{border:'none',cursor:'pointer',fontSize:'15px',fontWeight:'600'}}
                           >
                             <Download className="inline mr-2" size={18} />
-                            Download Encrypted Image (PNG)
+                            Save Encrypted Image to Gallery
                           </button>
                         </div>
                       )}
@@ -2643,6 +2759,37 @@ const saveReportToLocalStorage = (report, userInfo) => {
                       className="hidden"
                     />
                   </label>
+
+                  {/* APK gallery picker — shown inside Capacitor for native gallery access */}
+                  {!!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const { Camera, CameraResultType, CameraSource } = await import('@capacitor/camera');
+                          const photo = await Camera.getPhoto({
+                            quality: 100,
+                            allowEditing: false,
+                            resultType: CameraResultType.DataUrl,
+                            source: CameraSource.Photos,
+                          });
+                          if (photo.dataUrl) {
+                            const res = await fetch(photo.dataUrl);
+                            const blob = await res.blob();
+                            const file = new File([blob], 'gallery-image.png', { type: blob.type || 'image/png' });
+                            handleFileSelect(file);
+                          }
+                        } catch (err) {
+                          if (!String(err).includes('cancelled') && !String(err).includes('AbortError')) {
+                            alert('Could not open gallery: ' + err.message);
+                          }
+                        }
+                      }}
+                      className="block w-full bg-indigo-500 text-white px-6 py-4 rounded-lg hover:bg-indigo-600 transition font-semibold text-center"
+                      style={{border:'none',cursor:'pointer',fontSize:'16px'}}
+                    >
+                      🖼️ Pick from Gallery
+                    </button>
+                  )}
 
                   {preview && (
                     <div>
@@ -2692,27 +2839,7 @@ const saveReportToLocalStorage = (report, userInfo) => {
                         </div>
                       )}
 
-                      {/* [NEW] Crop Detection Banner */}
-                      {analysisReport.cropInfo && analysisReport.cropInfo.isCropped && (
-                        <div className="bg-purple-50 border-l-4 border-purple-500 p-4 mb-4">
-                          <div className="flex items-center gap-2">
-                            <span className="text-2xl">✂️</span>
-                            <div>
-                              <p className="font-bold text-purple-900">Crop Detected</p>
-                              <div className="text-purple-800 text-sm space-y-1 mt-1">
-                                <div><span className="font-semibold">Original Resolution:</span> {analysisReport.cropInfo.originalResolution}</div>
-                                <div><span className="font-semibold">Current Resolution:</span> {analysisReport.cropInfo.currentResolution}</div>
-                                <div><span className="font-semibold">Original Pixels:</span> {analysisReport.cropInfo.originalPixels}</div>
-                                <div><span className="font-semibold">Current Pixels:</span> {analysisReport.cropInfo.currentPixels}</div>
-                                <div><span className="font-semibold">Remaining:</span> {analysisReport.cropInfo.remainingPercentage}</div>
-                              </div>
-                              <p className="text-purple-700 text-xs mt-2">
-                                ✓ All encrypted ownership details preserved despite cropping. Only pixel count updated.
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      )}
+                      
 
                       <div className="grid md:grid-cols-2 gap-4">
                         <div className="bg-white p-4 rounded-lg border">
@@ -2772,6 +2899,16 @@ const saveReportToLocalStorage = (report, userInfo) => {
                             </div>
                             <div><span className="font-semibold">Ownership Info:</span> {analysisReport.ownershipInfo}</div>
                             <div><span className="font-semibold">Certificate:</span> {analysisReport.authorshipCertificate}</div>
+                            <div>
+                              <span className="font-semibold">Image Cropped:</span>{' '}
+                              {analysisReport.cropInfo?.isCropped ? (
+                                <span className="text-purple-700 font-semibold">
+                                  Yes ✂️ ({analysisReport.cropInfo.originalResolution} → {analysisReport.cropInfo.currentResolution}, {analysisReport.cropInfo.remainingPercentage} remaining)
+                                </span>
+                              ) : (
+                                <span className="text-gray-500">No</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
