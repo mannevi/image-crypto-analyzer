@@ -98,13 +98,85 @@ const smartPHashCompare = (uploadedCanvas, storedHash) => {
 const pHashSimWithRotationCompat = (uploadedCanvas, storedHash) => {
   if (!storedHash || storedHash === 'PHASH-UNAVAIL')
     return { sim: null, rotation: 0, algorithm: null, isLegacy: false, note: 'No fingerprint stored.' };
+
   let best = { sim: 0, rotation: 0 }, bestMeta = null;
+  let sim0 = 0; // similarity at 0° — used as baseline for rotation advantage check
+
   for (const deg of [0, 90, 180, 270]) {
     const c   = deg === 0 ? uploadedCanvas : rotateCanvas(uploadedCanvas, deg);
     const res = smartPHashCompare(c, storedHash);
+    if (deg === 0 && res.sim !== null) sim0 = res.sim;
     if (res.sim !== null && res.sim > best.sim) { best = { sim: res.sim, rotation: deg }; bestMeta = res; }
   }
-  return { sim: best.sim || null, rotation: best.rotation, algorithm: bestMeta?.algorithm || null, isLegacy: bestMeta?.isLegacy || false, note: bestMeta?.note || null };
+
+  // Require a meaningful similarity advantage before declaring a rotation.
+  // Genuine rotations outperform 0° by 15-30 points (the wrong orientation
+  // looks structurally different). A crop that changes aspect ratio may
+  // coincidentally score 1-5 points better at 90° — that is noise, not rotation.
+  // Threshold: 8 points clears all real rotations and blocks crop false positives.
+  const MIN_ROTATION_ADVANTAGE = 8;
+  const effectiveRotation = (best.rotation !== 0 && (best.sim - sim0) >= MIN_ROTATION_ADVANTAGE)
+    ? best.rotation : 0;
+
+  return { sim: best.sim || null, rotation: effectiveRotation, algorithm: bestMeta?.algorithm || null, isLegacy: bestMeta?.isLegacy || false, note: bestMeta?.note || null };
+};
+
+// =============================================================================
+// PART 1B: Multi-region pHash — finds the best-matching sub-region of the
+// original thumbnail vs the uploaded image. This is the key signal for
+// crop detection because global pHash of a corner crop vs full image is ~50%
+// (near-random), but pHash of that same corner vs the matching quadrant of
+// the original thumbnail is much higher.
+// =============================================================================
+const multiRegionPHashCompare = async (thumbSrc, uploadedCanvas, storedHashLength) => {
+  if (!thumbSrc) return { bestSim: null, bestCalib: null };
+  try {
+    const thumbCanvas = await loadImageToCanvas(thumbSrc);
+    const tw = thumbCanvas.width || 1, th = thumbCanvas.height || 1;
+    const uw = uploadedCanvas.width,   uh = uploadedCanvas.height;
+
+    // Build overlapping regions covering the full thumbnail at different scales.
+    // We compare each region's pHash against the uploaded image's pHash.
+    // If the upload is a crop of that region, similarity will be high.
+    const regions = [
+      [0,               0,               tw,             th            ], // full
+      [0,               0,               Math.ceil(tw/2),Math.ceil(th/2)], // top-left
+      [Math.floor(tw/2),0,               Math.ceil(tw/2),Math.ceil(th/2)], // top-right
+      [0,               Math.floor(th/2),Math.ceil(tw/2),Math.ceil(th/2)], // bottom-left
+      [Math.floor(tw/2),Math.floor(th/2),Math.ceil(tw/2),Math.ceil(th/2)], // bottom-right
+      [Math.floor(tw/4),Math.floor(th/4),Math.ceil(tw/2),Math.ceil(th/2)], // center 50%
+      [0,               0,               tw,             Math.ceil(th/2)], // top half
+      [0,               Math.floor(th/2),tw,             Math.ceil(th/2)], // bottom half
+      [0,               0,               Math.ceil(tw/2),th            ], // left half
+      [Math.floor(tw/2),0,               Math.ceil(tw/2),th            ], // right half
+      [0,               0,               Math.ceil(tw*3/4),Math.ceil(th*3/4)], // top-left 75%
+      [Math.floor(tw/4),0,               Math.ceil(tw*3/4),Math.ceil(th*3/4)], // top-right 75%
+      [0,               Math.floor(th/4),Math.ceil(tw*3/4),Math.ceil(th*3/4)], // bottom-left 75%
+      [Math.floor(tw/4),Math.floor(th/4),Math.ceil(tw*3/4),Math.ceil(th*3/4)], // bottom-right 75%
+    ];
+
+    const hashFn = storedHashLength === 16 ? computePerceptualHashLegacy : computePerceptualHashFromCanvas;
+    const uploadedHash = hashFn(uploadedCanvas);
+    if (!uploadedHash) return { bestSim: null, bestCalib: null };
+
+    let bestSim = 0, bestCalib = null, bestRegionLabel = null;
+    for (const [rx, ry, rw, rh] of regions) {
+      if (rw < 32 || rh < 32) continue;
+      try {
+        const rc = document.createElement('canvas');
+        rc.width = rw; rc.height = rh;
+        rc.getContext('2d').drawImage(thumbCanvas, rx, ry, rw, rh, 0, 0, rw, rh);
+        const regionHash = hashFn(rc);
+        const sim = pHashSimilarity(regionHash, uploadedHash);
+        if (sim !== null && sim > bestSim) {
+          bestSim = sim;
+          bestCalib = calibratePHash(sim);
+          bestRegionLabel = `${rw}x${rh} at (${rx},${ry})`;
+        }
+      } catch { /* skip this region */ }
+    }
+    return { bestSim, bestCalib, bestRegionLabel };
+  } catch { return { bestSim: null, bestCalib: null }; }
 };
 
 // =============================================================================
@@ -266,11 +338,41 @@ const extractUUIDFromCanvas = (canvas) => {
   } catch { return { found: false, userId: null }; }
 };
 
+// Extract UUID from a possibly-cropped canvas by testing multiple sub-regions.
+// When an image is cropped, only a portion of tiles survive. We try the top-left,
+// top-right, bottom-left, bottom-right, and center 80% sub-regions to find surviving tiles.
+const extractUUIDFromCroppedCanvas = (canvas) => {
+  const w = canvas.width, h = canvas.height;
+  // Sub-region: [x, y, width, height] — test corners and center
+  const regions = [
+    [0, 0, w, h],                                          // full (already tried, but included for clarity)
+    [0, 0, Math.ceil(w * 0.8), Math.ceil(h * 0.8)],       // top-left 80%
+    [Math.floor(w * 0.2), 0, Math.ceil(w * 0.8), h],      // right 80%
+    [0, Math.floor(h * 0.2), w, Math.ceil(h * 0.8)],      // bottom 80%
+    [Math.floor(w * 0.1), Math.floor(h * 0.1), Math.ceil(w * 0.8), Math.ceil(h * 0.8)], // center 80%
+  ];
+  for (const [rx, ry, rw, rh] of regions) {
+    if (rw < 64 || rh < 64) continue;
+    try {
+      const sub = document.createElement('canvas');
+      sub.width = rw; sub.height = rh;
+      sub.getContext('2d').drawImage(canvas, rx, ry, rw, rh, 0, 0, rw, rh);
+      const r = extractUUIDFromCanvas(sub);
+      if (r.found) return r;
+    } catch { /* continue */ }
+  }
+  return { found: false, userId: null };
+};
+
 const extractUUIDWithRotation = (canvas) => {
   for (const deg of [0, 90, 180, 270]) {
     const c      = deg === 0 ? canvas : rotateCanvas(canvas, deg);
+    // First try normal full-canvas extraction
     const result = extractUUIDFromCanvas(c);
     if (result.found) return { ...result, rotationDetected: deg };
+    // If that fails, try crop-compensated sub-region extraction
+    const cropResult = extractUUIDFromCroppedCanvas(c);
+    if (cropResult.found) return { ...cropResult, rotationDetected: deg };
   }
   return { found: false, userId: null, rotationDetected: null };
 };
@@ -355,6 +457,128 @@ const histogramSimilarity = (h1, h2) => {
   return Math.round((bc / 3) * 100);
 };
 
+// Raw pHash Hamming similarity returns ~50% for any two unrelated images by chance.
+// Calibrate by removing the 50% floor and rescaling [50,100] → [0,100].
+const calibratePHash = (raw) =>
+  raw === null || raw === undefined ? null : Math.max(0, Math.min(100, Math.round((raw - 50) * 2)));
+
+// =============================================================================
+// PART 4c: Stage A — Asset Relationship Classifier
+// =============================================================================
+//
+// The central insight driving the 2-stage pipeline:
+//   Forensic modification details (crop, resize, rotation, compression,
+//   region edits, colour shifts, editing tool) are only meaningful when the
+//   submitted image is first established to be a derivative of the same base
+//   asset.  Showing them for a completely unrelated image is misleading —
+//   every image will differ from an unrelated reference in all those ways.
+//
+// Stage A classifies the relationship BEFORE deciding which report template
+// to generate.  Stage B picks the template.
+//
+// Classification hierarchy (first match wins):
+//   EXACT_MATCH          — byte-identical or confidence ≥ 95%
+//   SAME_ASSET_MODIFIED  — UUID verified, or strong visual + high confidence
+//   SAME_ASSET_TRANSFORMED — pHash ≥ 25 cal. + moderate confidence
+//   POSSIBLE_DERIVATIVE  — weak signals but something points to the same asset
+//   UNRELATED_IMAGE      — no credible link to the registered asset
+//
+const determineAssetRelationship = ({
+  calibPHash, histSim, uuidCheck, confidence, exactMatch,
+}) => {
+  if (exactMatch || confidence >= 95) return 'EXACT_MATCH';
+
+  const uuidFound    = uuidCheck?.found === true;
+  const uuidVerified = uuidCheck?.matchesOwner === true;
+
+  // Cryptographic ownership proof overrides low visual scores
+  // (UUID survives crop + minor edits, so low visual score is expected)
+  if (uuidVerified && confidence >= 20) return 'SAME_ASSET_MODIFIED';
+  if (uuidFound    && confidence >= 70) return 'SAME_ASSET_MODIFIED';
+
+  if (confidence >= 70) return 'SAME_ASSET_MODIFIED';
+
+  if (confidence >= 40) {
+    if (uuidFound || (calibPHash !== null && calibPHash >= 25)) return 'SAME_ASSET_TRANSFORMED';
+    return 'POSSIBLE_DERIVATIVE';
+  }
+
+  if (confidence >= 15) {
+    if (uuidFound || (calibPHash !== null && calibPHash >= 15)) return 'POSSIBLE_DERIVATIVE';
+  }
+
+  return 'UNRELATED_IMAGE';
+};
+
+// Relationship → human label
+const RELATIONSHIP_LABEL = {
+  EXACT_MATCH:           'Exact Match',
+  SAME_ASSET_MODIFIED:   'Same Asset — Modified',
+  SAME_ASSET_TRANSFORMED:'Same Asset — Transformed',
+  POSSIBLE_DERIVATIVE:   'Possible Derivative',
+  UNRELATED_IMAGE:       'Unrelated Image',
+};
+
+// =============================================================================
+// PART 4d: Stage B — Report mode selector
+// =============================================================================
+//
+// For UNRELATED_IMAGE: generateMismatchReport() — short, clean, decisive.
+// For everything else: generateModificationReport() — full forensic breakdown.
+//
+// buildMismatchReasons() merges overlapping visual signals into at most 4
+// concise, human-readable reasons.  Avoids showing pHash mismatch + histogram
+// mismatch + pixel mismatch + visual mismatch all separately.
+//
+const buildMismatchReasons = (result) => {
+  const reasons = [];
+  const calibP  = result.pHashCalibrated;
+  const hist    = result.histSim;
+  const uuid    = result.uuidCheck;
+
+  // ── Reason 1: Merge all visual-similarity signals into one statement ───────
+  if (calibP !== null && calibP < 15) {
+    if (hist !== null && hist < 45) {
+      reasons.push(
+        'Visual structure and colour profile are completely different — ' +
+        'perceptual hash and histogram both confirm images are unrelated'
+      );
+    } else {
+      reasons.push(
+        'Perceptual hash similarity is within the random-image noise baseline ' +
+        `(calibrated ${calibP}%) — images have no meaningful visual correspondence`
+      );
+    }
+  } else if (hist !== null && hist < 35) {
+    reasons.push(
+      `Colour profile does not match the registered asset (histogram similarity ${hist}%)`
+    );
+  } else {
+    reasons.push('Visual similarity is too low to establish any asset correspondence');
+  }
+
+  // ── Reason 2: UUID / ownership signature ──────────────────────────────────
+  if (!uuid?.found) {
+    reasons.push('No PINIT ownership signature (UUID) found in the submitted image');
+  } else if (uuid?.matchesOwner === false) {
+    reasons.push('Embedded UUID belongs to a different registered user — not the asset owner');
+  }
+
+  // ── Reason 3: Structural mismatch (only if significantly different) ────────
+  reasons.push(
+    'Content and structural analysis do not support continuity with the registered asset'
+  );
+
+  // ── Reason 4: Feature-level statement ─────────────────────────────────────
+  if (reasons.length < 4) {
+    reasons.push(
+      'Submitted image is not a derivative, copy, or modification of the registered asset'
+    );
+  }
+
+  return reasons.slice(0, 4);
+};
+
 // =============================================================================
 // PART 5: SHA-256
 // =============================================================================
@@ -375,16 +599,36 @@ const computeFileSHA256 = async (file) => {
 // pixel differences on legitimate unmodified images.
 const runPixelDiff = async (origSrc, uploadedCanvas) => {
   try {
-    const origCanvas   = await loadImageToCanvas(origSrc);
+    const origCanvas = await loadImageToCanvas(origSrc);
     const SIZE = 256;
-    const makeScaled   = (src) => {
+    // If the uploaded image is smaller in both dimensions (cropped), compare the
+    // center-cropped region of the original against the uploaded image rather than
+    // stretching both to 256×256 (which destroys the spatial correspondence).
+    const ow = origCanvas.width, oh = origCanvas.height;
+    const uw = uploadedCanvas.width, uh = uploadedCanvas.height;
+    const isCrop = uw < ow && uh < oh;
+
+    const makeScaled = (src, sx = 0, sy = 0, sw = src.width, sh = src.height) => {
       const c = document.createElement('canvas');
       c.width = SIZE; c.height = SIZE;
-      c.getContext('2d').drawImage(src, 0, 0, SIZE, SIZE);
+      c.getContext('2d').drawImage(src, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
       return c.getContext('2d').getImageData(0, 0, SIZE, SIZE);
     };
-    const origData     = makeScaled(origCanvas);
-    const uploadedData = makeScaled(uploadedCanvas);
+
+    let origData, uploadedData;
+    if (isCrop && ow > 0 && oh > 0) {
+      // Crop the original to the same relative area as the uploaded (center-aligned)
+      const scaleX = uw / ow, scaleY = uh / oh;
+      const cropW  = Math.round(ow * scaleX);
+      const cropH  = Math.round(oh * scaleY);
+      const cropX  = Math.round((ow - cropW) / 2);
+      const cropY  = Math.round((oh - cropH) / 2);
+      origData     = makeScaled(origCanvas, cropX, cropY, cropW, cropH);
+      uploadedData = makeScaled(uploadedCanvas);
+    } else {
+      origData     = makeScaled(origCanvas);
+      uploadedData = makeScaled(uploadedCanvas);
+    }
     const GRID = 4;
     const cellW = SIZE / GRID, cellH = SIZE / GRID;
     let totalDiff = 0, changedPixels = 0;
@@ -687,91 +931,857 @@ const RegionHeatmap = ({ hotRegions }) => {
 };
 
 // =============================================================================
-// PART 10: Main comparison engine
+// PART 10: Decision-based comparison pipeline (2-stage)
 // =============================================================================
+// =============================================================================
+// PART 10: Decision-based comparison pipeline (2-stage)
+// =============================================================================
+//
+// Architecture:
+//   Stage 0  — compute raw signals (pHash, histogram, UUID, pixel diff, etc.)
+//   Stage 1  — classifyRelationship() → UNRELATED | EXACT | SAME_ASSET_*
+//   Stage 2  — detectTransformations() → runs ONLY if same-asset is confirmed
+//   Stage 3  — buildVisibleFindings()  → human-readable, deduplicated findings
+//
+// Key rule: Transformation analysis NEVER runs for unrelated images.
+// Raw signals (pHash %, histogram %, pixel delta) are NEVER shown to users.
+// Only semantic findings (e.g. "Cropping detected") appear in the report.
+
+// ── Stage 0A: Platform likelihood assessment (3-layer redesign) ───────────────
+//
+// Returns a probabilistic assessment — never a definitive claim.
+// Only surfaces when image is already confirmed as same-asset OR evidence is strong.
+// Confidence thresholds:  0.85+ highly likely | 0.65+ likely | 0.50+ possible
+//                         below 0.50 → NONE (not surfaced)
+//
+const assessPlatformLikelihood = (editingTool, uploadedCanvas, uploadedFile, assetRelationship, pixelAnalysis) => {
+  const tool   = (editingTool || '').toLowerCase();
+  const w      = uploadedCanvas?.width  || 0;
+  const h      = uploadedCanvas?.height || 0;
+  const maxDim = Math.max(w, h);
+  const minDim = Math.min(w, h);
+
+  // ── WhatsApp scoring ──────────────────────────────────────────────────────
+  let waScore = 0;
+  const waReasons = [];
+
+  // Metadata string — strong but rare (WhatsApp strips most EXIF)
+  if (tool.includes('whatsapp')) {
+    waScore += 0.55; waReasons.push('WhatsApp identified in file metadata');
+  }
+  // WhatsApp-HD dimensions: 1280×960 or 960×1280 (4:3 landscape/portrait HD)
+  if ((w === 1280 && h === 960) || (w === 960 && h === 1280)) {
+    waScore += 0.30; waReasons.push('Dimensions match WhatsApp HD output (1280×960)');
+  }
+  // WhatsApp common output dimensions beyond HD — covers portrait and 16:9 outputs
+  const WA_DIMS = [
+    [1280,720],[720,1280],   // 16:9 landscape / portrait
+    [1280,854],[854,1280],   // 3:2
+    [1024,768],[768,1024],   // 4:3 non-HD
+    [1024,1024],             // square
+    [640,480],[480,640],     // low-res
+  ];
+  if (WA_DIMS.some(([dw,dh]) => (w===dw&&h===dh)||(w===dh&&h===dw))) {
+    waScore += 0.25; waReasons.push('Dimensions match a common WhatsApp output size');
+  }
+  // WhatsApp standard range: max dimension 800–1600px (avoids flagging unrelated sizes)
+  if (maxDim >= 800 && maxDim <= 1600 && minDim >= 450) {
+    waScore += 0.15; waReasons.push('Dimensions within WhatsApp standard output range');
+  }
+  // EXIF stripped + JPEG (WhatsApp always strips EXIF)
+  const isJpeg = uploadedFile?.type === 'image/jpeg' ||
+    (uploadedFile?.name || '').toLowerCase().match(/\.(jpg|jpeg)$/);
+  const exifStripped = !editingTool || tool === 'no metadata recorded (screenshot or basic app)';
+  if (isJpeg && exifStripped) {
+    waScore += 0.15; waReasons.push('EXIF metadata stripped from JPEG (consistent with WhatsApp)');
+  }
+  // WhatsApp file size heuristic: typically 50–300 KB for standard images
+  const sizeKB = (uploadedFile?.size || 0) / 1024;
+  if (sizeKB >= 40 && sizeKB <= 350) {
+    waScore += 0.10; waReasons.push('File size consistent with WhatsApp recompression');
+  }
+
+  // ── Instagram scoring ─────────────────────────────────────────────────────
+  let igScore = 0;
+  const igReasons = [];
+
+  if (tool.includes('instagram')) {
+    igScore += 0.55; igReasons.push('Instagram identified in file metadata');
+  }
+  // Instagram normalises to 1080px on the long edge
+  if (w === 1080 || h === 1080) {
+    igScore += 0.30; igReasons.push('Image has Instagram-standard 1080px dimension');
+  }
+  // Instagram portrait 4:5 ratio
+  if ((w === 1080 && h === 1350) || (w === 1350 && h === 1080)) {
+    igScore += 0.25; igReasons.push('Dimensions match Instagram portrait ratio (1080×1350)');
+  }
+  // Instagram square
+  if (w === 1080 && h === 1080) {
+    igScore += 0.25; igReasons.push('Dimensions match Instagram square format (1080×1080)');
+  }
+  // Instagram landscape 1.91:1 (exact)
+  if ((w === 1080 && h === 566) || (w === 1080 && h === 608)) {
+    igScore += 0.20; igReasons.push('Dimensions match Instagram landscape ratio');
+  }
+  // Instagram landscape: any 1080px-wide image with 16:9-ish aspect ratio
+  // covers the full range of Instagram landscape delivery sizes
+  const igAspect = h > 0 ? w / h : 0;
+  if (w === 1080 && igAspect >= 1.6 && igAspect <= 2.1 && h !== 566 && h !== 608) {
+    igScore += 0.20; igReasons.push('Dimensions match Instagram landscape output (1080px wide, 16:9 range)');
+  }
+  if (isJpeg && exifStripped) {
+    igScore += 0.10; igReasons.push('EXIF stripped from JPEG (consistent with Instagram delivery)');
+  }
+
+  // ── Screenshot scoring ────────────────────────────────────────────────────
+  // Hard rule: SCREENSHOT_LIKELY requires strong independent evidence (tool EXIF).
+  // Dimension and pixel signals are weak corroboration only — they fire for every
+  // crop/resize/rotate and must NEVER alone produce a screenshot verdict.
+  let ssScore = 0;
+  let ssStrongEvidence = false;  // tracks whether metadata-level evidence is present
+  const ssReasons = [];
+  const SCREEN_RES = [
+    [1920,1080],[2560,1440],[1366,768],[1280,720],[3840,2160],
+    [1440,900],[2560,1600],[1536,864],[375,812],[390,844],
+    [414,896],[393,851],[360,800],[1170,2532],[1284,2778],
+  ];
+  // Screen resolution: weak corroborating signal only (0.15, was 0.30).
+  // Cannot cross the 0.50 threshold on its own — requires additional evidence.
+  // A cropped or resized image may coincidentally match a screen resolution.
+  if (SCREEN_RES.some(([sw,sh]) => (Math.abs(w-sw)<8&&Math.abs(h-sh)<8)||(Math.abs(w-sh)<8&&Math.abs(h-sw)<8))) {
+    ssScore += 0.15; ssReasons.push('Resolution matches a common device screen resolution');
+  }
+  // Tool EXIF: the only strong, screenshot-specific signal.
+  // CRITICAL EXCLUSION: 'No metadata recorded (screenshot or basic app)' is the
+  // FALLBACK string returned when ALL EXIF is stripped (Instagram, WhatsApp, etc.).
+  // It contains the word 'screenshot' but does NOT mean a screenshot tool was used.
+  // Only a SPECIFIC, named screenshot app (Snipping Tool, Grab, macOS Screenshot)
+  // is genuine evidence. The fallback string must be excluded unconditionally.
+  const isSpecificScreenshotTool =
+    (tool.includes('screenshot') || tool.includes('snipping') || tool.includes('grab')) &&
+    !tool.includes('no metadata recorded');
+  if (isSpecificScreenshotTool) {
+    ssScore += 0.55; ssReasons.push('Screenshot tool identified in file metadata');
+    ssStrongEvidence = true;
+  }
+  // NOTE: pixelAnalysis.changedPct removed — pixel deviation fires for every
+  // geometric transform (crop/resize/rotate) and is NOT screenshot-specific.
+
+  // ── Safety gate: only surface platform labels for same-asset images ───────
+  // Prevents labelling a random 1080px image as "Instagram"
+  const isSameAsset = assetRelationship === 'SAME_ASSET' || assetRelationship === 'EXACT_MATCH' ||
+                      assetRelationship === 'POSSIBLE_DERIVATIVE';
+  if (!isSameAsset) {
+    // Only surface if a REAL platform/tool string is present (not the generic fallback).
+    // 'No metadata recorded (screenshot or basic app)' is stripped-EXIF fallback — not platform proof.
+    const hasRealToolString =
+      (tool.includes('whatsapp') || tool.includes('instagram') ||
+       ((tool.includes('screenshot') || tool.includes('snipping')) && !tool.includes('no metadata recorded')));
+    if (!hasRealToolString) {
+      return { primary: 'NONE', confidence: 0, reasons: [] };
+    }
+  }
+
+  // ── Pick winner ───────────────────────────────────────────────────────────
+  const MIN_CONFIDENCE = 0.50;
+  const candidates = [
+    { primary: 'WHATSAPP_LIKELY',  confidence: Math.min(1, waScore), reasons: waReasons },
+    { primary: 'INSTAGRAM_LIKELY', confidence: Math.min(1, igScore), reasons: igReasons },
+    // SCREENSHOT_LIKELY: only surface when strong evidence exists (tool EXIF) OR
+    // score reaches 0.65+ (requires tool EXIF + screen res — dimension alone = 0.15).
+    // This prevents crop/resize/rotate from producing false screenshot verdicts.
+    { primary: 'SCREENSHOT_LIKELY', confidence: ssStrongEvidence ? Math.min(1, ssScore) : 0, reasons: ssReasons },
+  ].filter(c => c.confidence >= MIN_CONFIDENCE)
+   .sort((a, b) => b.confidence - a.confidence);
+
+  if (candidates.length === 0) {
+    // Generic recompression: require ALL THREE signals to avoid false positives on
+    // simple crops/resizes/rotates that were saved as JPEG by any image editor.
+    // 1) JPEG format  2) EXIF stripped  3) file size in typical recompressed range (40–350 KB)
+    const sizeInRecompressRange = sizeKB >= 40 && sizeKB <= 350;
+    if (isJpeg && exifStripped && sizeInRecompressRange && isSameAsset) {
+      return { primary: 'GENERIC_RECOMPRESSED', confidence: 0.60, reasons: ['JPEG with stripped EXIF and file size consistent with platform recompression'] };
+    }
+    return { primary: 'NONE', confidence: 0, reasons: [] };
+  }
+
+  return candidates[0];
+};
+
+// ── Stage 0B: Screenshot indicator detection ──────────────────────────────────
+const detectScreenshotIndicators = (uploadedFile, pixelAnalysis, editingTool, uploadedCanvas) => {
+  const indicators = [];
+  const w    = uploadedCanvas?.width  || 0;
+  const h    = uploadedCanvas?.height || 0;
+  const tool = (editingTool || '').toLowerCase();
+
+  const SCREEN_RES = [
+    [1920,1080],[2560,1440],[1366,768],[1280,720],[3840,2160],
+    [1440,900],[2560,1600],[1536,864],[375,812],[390,844],
+    [414,896],[393,851],[360,800],[1170,2532],[1284,2778],
+  ];
+  if (SCREEN_RES.some(([sw,sh]) => (Math.abs(w-sw)<8 && Math.abs(h-sh)<8) || (Math.abs(w-sh)<8 && Math.abs(h-sw)<8)))
+    indicators.push('resolution_matches_screen');
+
+  // Only flag screenshot tool if EXIF *actively identifies* a SPECIFIC screenshot app.
+  // 'No metadata recorded (screenshot or basic app)' is a fallback for stripped EXIF —
+  // it does NOT mean a screenshot tool was used. Exclude it explicitly.
+  const isSpecificSSTool =
+    tool &&
+    (tool.includes('screenshot') || tool.includes('snipping') || tool.includes('grab')) &&
+    !tool.includes('no metadata recorded');
+  if (isSpecificSSTool) indicators.push('screenshot_tool_exif');
+
+  // NOTE: high_pixel_deviation removed — pixel deviation fires for every geometric
+  // transform (rotate/crop/resize) and is NOT a screenshot-specific signal.
+  // Two strong signals (screen resolution + tool EXIF) are sufficient for detection.
+
+  return indicators;
+};
+
+// ── Stage 0C: UUID status classification (Layer 3) ───────────────────────────
+//
+// Separates UUID outcome from asset relationship — UUID loss does NOT mean
+// the image is unrelated. It means the steganographic embedding was disrupted.
+//
+const classifyUUIDStatus = (uuidCheck, platformLikelihood, transformations) => {
+  if (uuidCheck?.found && uuidCheck?.matchesOwner === true) {
+    return {
+      state: 'VERIFIED',
+      confidence: 100,
+      extractedValue: uuidCheck.userId,
+      matchedOwner: true,
+      likelyFailureReason: null,
+    };
+  }
+  if (uuidCheck?.found && uuidCheck?.matchesOwner === null) {
+    return {
+      state: 'PARTIAL',
+      confidence: 60,
+      extractedValue: uuidCheck.userId,
+      matchedOwner: null,
+      likelyFailureReason: 'UUID extracted but vault owner ID not available for comparison',
+    };
+  }
+  if (uuidCheck?.found && uuidCheck?.matchesOwner === false) {
+    return {
+      state: 'INVALID_OWNER',
+      confidence: 95,
+      extractedValue: uuidCheck.userId,
+      matchedOwner: false,
+      likelyFailureReason: 'Embedded UUID belongs to a different registered user',
+    };
+  }
+  // UUID not found — determine likely cause from context
+  let likelyFailureReason = null;
+  const p = platformLikelihood?.primary;
+  if (p === 'WHATSAPP_LIKELY')
+    likelyFailureReason = 'WhatsApp recompresses JPEG with lossy encoding, destroying pixel-level steganographic data';
+  else if (p === 'INSTAGRAM_LIKELY')
+    likelyFailureReason = 'Instagram re-encodes all images on upload, destroying pixel-level steganographic data';
+  else if (p === 'SCREENSHOT_LIKELY')
+    likelyFailureReason = 'Screen recapture does not preserve the original pixel values required for UUID recovery';
+  else if (p === 'GENERIC_RECOMPRESSED')
+    likelyFailureReason = 'JPEG recompression after registration likely destroyed the steganographic embedding';
+  else if (transformations?.cropped?.detected)
+    likelyFailureReason = 'Heavy cropping may have removed or disrupted tile-based UUID embedding regions';
+
+  const hasPlatformReason = !!likelyFailureReason;
+  return {
+    state: hasPlatformReason ? 'DAMAGED' : 'NOT_FOUND',
+    confidence: hasPlatformReason ? 75 : 85,
+    extractedValue: null,
+    matchedOwner: null,
+    likelyFailureReason,
+  };
+};
+
+// ── Stage 1: Relationship classification ─────────────────────────────────────
+//
+// Thresholds (calibPHash is the 0-100 scale after removing 50% random floor):
+//   EXACT_MATCH             calibPHash >= 90 AND histSim >= 80
+//   SAME_ASSET_*            compositeScore >= 45 OR calibPHash >= 55
+//   UNRELATED               compositeScore < 35
+//
+// compositeScore = calibPHash*0.55 + histSim*0.35 + uuidBonus(0|5|12)
+
+const classifyRelationship = (signals) => {
+  const {
+    shaMatch, calibPHash, histSim, uuidCheck,
+    origW, origH, uploadedW, uploadedH,
+    detectedRotation, editingTool, screenshotIndicators,
+  } = signals;
+
+  if (shaMatch) return { assetRelationship: 'EXACT_MATCH', verdict: 'EXACT_MATCH', confidence: 100 };
+
+  const cp = calibPHash ?? 0;
+  const hs = histSim    ?? 0;
+  const uuidBonus = uuidCheck?.found && uuidCheck?.matchesOwner === true  ? 12
+                  : uuidCheck?.found && uuidCheck?.matchesOwner !== false  ?  5
+                  : 0;
+  const compositeScore = cp * 0.55 + hs * 0.35 + uuidBonus;
+
+  // Near-identical encoding variant — dimensions must also match.
+  // A resized image produces the same pHash (both scale to 32×32) but MUST NOT
+  // be classified as exact match — it is a resize. Only allow this path when
+  // the uploaded image dimensions are within ±20px of the original on both axes.
+  const dimsMatchForExact = origW === 0 || (
+    Math.abs(uploadedW - origW) <= 20 && Math.abs(uploadedH - origH) <= 20
+  );
+  if (cp >= 90 && hs >= 80 && dimsMatchForExact)
+    return { assetRelationship: 'EXACT_MATCH', verdict: 'EXACT_MATCH', confidence: 95 };
+
+  // Same-asset threshold.
+  // NOTE: global pHash drops to near-random (calibrated ~0%) for cropped images
+  // because a corner crop looks nothing like the full image at 32×32 scale.
+  // Multi-region pHash (computed in runComparison) largely corrects this, but
+  // we also lower the geometry-based fallback thresholds significantly.
+  const bothDimsSmaller = origW > 0 && origH > 0 && uploadedW < origW && uploadedH < origH;
+  // Aspect ratio of upload vs original (or rotation-swapped original)
+  const isSwapRotCls   = detectedRotation === 90 || detectedRotation === 270;
+  const refWCls        = isSwapRotCls ? origH : origW;
+  const refHCls        = isSwapRotCls ? origW : origH;
+  const aspectOrigCls  = refWCls > 0 && refHCls > 0 ? refWCls / refHCls : null;
+  const aspectUpCls    = uploadedW > 0 && uploadedH > 0 ? uploadedW / uploadedH : null;
+  // Same aspect ratio + both dims smaller = very strong crop signal
+  const isSameAspectCrop = bothDimsSmaller && aspectOrigCls && aspectUpCls &&
+    Math.abs(aspectOrigCls - aspectUpCls) < 0.08;
+
+  const isSameAsset =
+    compositeScore >= 45 ||
+    cp >= 55 ||
+    (uuidCheck?.found && uuidCheck?.matchesOwner === true) ||  // UUID proven → always same asset
+    (uuidCheck?.found && cp >= 10) ||                          // UUID found + minimal visual match
+    (isSameAspectCrop && cp >= 5) ||                           // same-ratio crop + tiny visual signal
+    (bothDimsSmaller && cp >= 15) ||                           // any crop geometry + low visual
+    (bothDimsSmaller && compositeScore >= 20);                 // crop geometry + histogram agreement
+
+  if (!isSameAsset) {
+    return { assetRelationship: 'UNRELATED_IMAGE', verdict: 'UNRELATED_IMAGE', confidence: Math.round(Math.max(60, 100 - compositeScore * 1.4)) };
+  }
+
+  const conf = Math.round(Math.min(92, compositeScore));
+
+  // All paths below this point are confirmed same-asset
+  // Rotation (rotation-corrected pHash was best at non-zero angle)
+  if (detectedRotation && detectedRotation !== 0 && cp >= 48)
+    return { assetRelationship: 'SAME_ASSET', verdict: 'SAME_ASSET_ROTATED', confidence: conf };
+
+  // Geometry-based classification — account for rotation swapping W/H
+  const isSwapRot      = detectedRotation === 90 || detectedRotation === 270;
+  const refOrigW       = isSwapRot ? origH : origW;
+  const refOrigH       = isSwapRot ? origW : origH;
+  const aspectOrig     = refOrigW > 0 && refOrigH > 0 ? refOrigW / refOrigH : null;
+  const aspectUploaded = uploadedW > 0 && uploadedH > 0 ? uploadedW / uploadedH : null;
+  const aspectChanged  = aspectOrig && aspectUploaded && Math.abs(aspectOrig - aspectUploaded) > 0.04;
+  const dimsChanged    = origW > 0 && (Math.abs(uploadedW - refOrigW) > 50 || Math.abs(uploadedH - refOrigH) > 50);
+  // Both dims smaller than the (rotation-adjusted) original → crop, even if aspect ratio unchanged
+  const isCropGeometry = refOrigW > 0 && refOrigH > 0 &&
+    uploadedW <= refOrigW && uploadedH <= refOrigH &&
+    (Math.abs(uploadedW - refOrigW) > 30 || Math.abs(uploadedH - refOrigH) > 30);
+
+  // Resize: same aspect ratio, any size change including downscale.
+  // Must come BEFORE crop check — a proportional downscale preserves aspect
+  // ratio and should never be labelled as a crop.
+  if (!aspectChanged && dimsChanged && origW > 0)
+    return { assetRelationship: 'SAME_ASSET', verdict: 'SAME_ASSET_RESIZED', confidence: Math.min(88, conf) };
+
+  // Crop: aspect ratio changed — the only geometry signal that definitively
+  // distinguishes a crop from a resize. Low cp threshold because pHash drops
+  // naturally when only a region of the image is compared.
+  if (aspectChanged && dimsChanged && cp >= 5)
+    return { assetRelationship: 'SAME_ASSET', verdict: 'SAME_ASSET_CROPPED', confidence: Math.min(85, conf) };
+
+  // UUID missing despite visual match
+  if (!uuidCheck?.found && cp >= 55)
+    return { assetRelationship: 'SAME_ASSET', verdict: 'SAME_ASSET_UUID_DAMAGED', confidence: Math.min(80, conf) };
+
+  // Multiple / unresolved changes
+  if (cp >= 45)
+    return { assetRelationship: 'SAME_ASSET', verdict: 'SAME_ASSET_MULTI_CHANGE', confidence: Math.min(82, conf) };
+
+  if (compositeScore >= 35)
+    return { assetRelationship: 'POSSIBLE_DERIVATIVE', verdict: 'POSSIBLE_DERIVATIVE', confidence: Math.round(compositeScore) };
+
+  return { assetRelationship: 'UNRELATED_IMAGE', verdict: 'UNRELATED_IMAGE', confidence: Math.round(Math.max(60, 100 - compositeScore * 1.4)) };
+};
+
+// ── Stage 2: Transformation detection (same-asset only) ──────────────────────
+const detectTransformations = (signals, verdict) => {
+  const {
+    calibPHash, uuidCheck, pixelAnalysis,
+    origW, origH, uploadedW, uploadedH,
+    detectedRotation, editingTool, screenshotIndicators,
+  } = signals;
+
+  const cp = calibPHash ?? 0;
+  const result = {};
+
+  // When the image was rotated 90° or 270°, width and height are swapped.
+  // Compare against the rotated reference dimensions to avoid false crop detection.
+  const isSwapRotation = detectedRotation === 90 || detectedRotation === 270;
+  const refW = isSwapRotation ? origH : origW;
+  const refH = isSwapRotation ? origW : origH;
+
+  const aspectOrig     = refW > 0 && refH > 0 ? refW / refH : null;
+  const aspectUploaded = uploadedW > 0 && uploadedH > 0 ? uploadedW / uploadedH : null;
+  const aspectChanged  = aspectOrig && aspectUploaded && Math.abs(aspectOrig - aspectUploaded) > 0.04;
+  const bothSmaller    = uploadedW < refW && uploadedH < refH;
+  const retainedArea   = refW > 0 && refH > 0
+    ? Math.round((uploadedW * uploadedH) / (refW * refH) * 100) : null;
+  const dimsChanged    = origW > 0 && (Math.abs(uploadedW - refW) > 50 || Math.abs(uploadedH - refH) > 50);
+
+  // Crop: fires if aspect changed OR relationship was explicitly classified as crop.
+  // Removed (bothSmaller && dimsChanged) — same-aspect downscales are resizes, not crops.
+  // Aspect ratio change is the only dimension-based signal that definitively means crop.
+  const isCropDetected =
+    aspectChanged ||
+    verdict === 'SAME_ASSET_CROPPED';
+
+  if (isCropDetected) {
+    const cropMsg = bothSmaller
+      ? `Area reduced — content cropped from ${refW > 0 ? refW + ' × ' + refH : 'original'} to ${uploadedW} × ${uploadedH}`
+      : `Aspect ratio changed — deliberate crop detected`;
+    result.cropped = {
+      detected: true,
+      confidence: cp >= 65 ? 90 : cp >= 35 ? 78 : 68,
+      originalDimensions:  origW > 0 ? `${origW} × ${origH}` : null,
+      submittedDimensions: `${uploadedW} × ${uploadedH}`,
+      retainedAreaPercent: retainedArea,
+      cropRegion: cropMsg,
+    };
+  }
+
+  // Rotation
+  if (detectedRotation && detectedRotation !== 0) {
+    result.rotated = { detected: true, confidence: 88, angle: detectedRotation };
+  }
+
+  // Resize: same aspect ratio, any size change including downscale
+  if (!isCropDetected && !aspectChanged && dimsChanged && origW > 0) {
+    result.resized = {
+      detected: true, confidence: 88,
+      originalDimensions:  `${origW} × ${origH}`,
+      submittedDimensions: `${uploadedW} × ${uploadedH}`,
+      scaleX: Math.round((uploadedW / origW) * 100) / 100,
+      scaleY: Math.round((uploadedH / origH) * 100) / 100,
+    };
+  }
+
+  // Screenshot — require at least 2 indicators to populate, 3 to mark detected=true.
+  // This prevents single weak signals (e.g. common resolution) from firing alone.
+  if ((screenshotIndicators?.length ?? 0) >= 2) {
+    result.screenshot = {
+      detected: (screenshotIndicators?.length ?? 0) >= 3,
+      confidence: Math.min(85, (screenshotIndicators?.length ?? 0) * 28),
+      indicators: screenshotIndicators,
+    };
+  }
+
+  // UUID damaged — platform cause is now resolved by classifyUUIDStatus (Layer 3).
+  // detectTransformations only flags geometry/editing causes here.
+  if (!uuidCheck?.found) {
+    let likelyCause = 'Pixel-level editing or platform processing after registration';
+    if (result.screenshot?.detected)    likelyCause = 'Screen recapture does not preserve pixel-level steganographic data';
+    else if (result.cropped?.detected)  likelyCause = 'Cropping may have disrupted the tile-based UUID embedding';
+    else if (editingTool)               likelyCause = `Pixel-level editing (${editingTool}) destroyed the steganographic signature`;
+    result.uuidDamaged = {
+      detected: true, confidence: cp >= 65 ? 82 : 62, likelyCause,
+    };
+  }
+
+  return result;
+};
+
+// ── Stage 3A: Report mode determination ──────────────────────────────────────
+//
+//   EXACT_MATCH            → clean green confirmation
+//   SINGLE_CHANGE          → one focused transformation
+//   MULTI_CHANGE           → condensed list of confirmed changes
+//   PLATFORM_PROCESSED      → 3-card: asset relationship | platform likelihood | uuid status
+//   UUID_DAMAGE            → caution — asset confirmed, signature lost
+//   MISMATCH               → short red no-match card (NO forensic clutter)
+
+const determineReportMode = (verdict, transformations, platformLikelihood) => {
+  if (verdict === 'EXACT_MATCH') return 'EXACT_MATCH';
+  if (verdict === 'UNRELATED_IMAGE' || verdict === 'POSSIBLE_DERIVATIVE') return 'MISMATCH';
+
+  // Platform-processed same-asset
+  const platPrimary = platformLikelihood?.primary;
+
+  // Hard gate for SCREENSHOT_LIKELY — ABSOLUTE rule.
+  // If any geometric transform (crop/resize/rotate) is detected, NEVER route to
+  // PLATFORM_PROCESSED for screenshot. The geometric finding always takes priority.
+  //
+  // Rationale: a file may carry screenshot tool metadata from a previous processing
+  // step (e.g. the original was once a screenshot, then rotated by the user).
+  // The current operation is geometric, not a screen recapture — the metadata is
+  // historic artefact, not current evidence. Mixing geometric and platform labels
+  // in the same report confuses the verdict. Geometric transforms win unconditionally.
+  //
+  // Screenshot evidence is still preserved in transformations.screenshot for
+  // forensic completeness, but it never overrides crop/resize/rotate verdict.
+  if (platPrimary === 'SCREENSHOT_LIKELY') {
+    const hasGeometricTransform =
+      transformations.cropped?.detected ||
+      transformations.resized?.detected ||
+      transformations.rotated?.detected;
+    if (!hasGeometricTransform) {
+      return 'PLATFORM_PROCESSED';
+    }
+    // Geometric transform present → fall through to SINGLE_CHANGE / MULTI_CHANGE
+  } else if (platPrimary === 'WHATSAPP_LIKELY' || platPrimary === 'INSTAGRAM_LIKELY' ||
+             platPrimary === 'GENERIC_RECOMPRESSED') {
+    return 'PLATFORM_PROCESSED';
+  }
+
+  if (verdict === 'SAME_ASSET_UUID_DAMAGED') return 'UUID_DAMAGE';
+
+  const detected = Object.values(transformations).filter(t => t?.detected && (t.confidence ?? 0) >= 65).length;
+  return detected <= 1 ? 'SINGLE_CHANGE' : 'MULTI_CHANGE';
+};
+
+// ── Stage 3B: Visible findings builder ───────────────────────────────────────
+//
+// Only findings with confidence >= 60 appear.
+// Duplicate/derivative signals are SUPPRESSED and merged into one root finding.
+// Max visible findings per mode: MISMATCH=4, EXACT_MATCH=3, others=4-6.
+
+const buildVisibleFindings = (verdict, reportMode, transformations, signals, uuidCheck, platformLikelihood, uuidStatus) => {
+  const { calibPHash, histSim, origW, origH, uploadedW, uploadedH,
+          editingTool, screenshotIndicators } = signals;
+  const cp = calibPHash ?? 0;
+  const findings = [];
+
+  const uuidVerifiedText   = 'Ownership signature verified — matches registered owner.';
+  const uuidNotFoundText   = 'No PINIT steganographic signature was found. This image was not registered through this vault.';
+
+  // ── MISMATCH: short, clean, no forensic dump ─────────────────────────────
+  if (reportMode === 'MISMATCH') {
+    findings.push({
+      type: 'NO_MATCH',
+      title: 'Submitted image does not correspond to the selected asset',
+      summary: 'The submitted image has no meaningful visual, structural, or ownership connection to the registered original. These appear to be completely different images.',
+      confidence: 95,
+    });
+    findings.push({
+      type: 'UUID_ABSENT',
+      title: 'No ownership signature found',
+      summary: uuidNotFoundText,
+      confidence: 95,
+    });
+    // Single merged similarity reason — suppresses pHash/histogram/pixel separately
+    const combinedSim = Math.round(cp * 0.6 + (histSim ?? 0) * 0.4);
+    findings.push({
+      type: 'LOW_SIMILARITY',
+      title: 'Extremely low visual and structural similarity',
+      summary: `All comparison signals — perceptual hash, colour distribution, and structural analysis — confirm a mismatch. Combined similarity score: ${combinedSim}%. This is within the range expected for two completely unrelated images.`,
+      confidence: 92,
+    });
+    findings.push({
+      type: 'NO_CONTINUITY',
+      title: 'No asset continuity established',
+      summary: 'Visual, structural, and ownership analysis all confirm that the submitted image does not originate from the selected registered asset.',
+      confidence: 90,
+    });
+    return findings.slice(0, 4);
+  }
+
+  // ── EXACT_MATCH ──────────────────────────────────────────────────────────
+  if (reportMode === 'EXACT_MATCH') {
+    findings.push({
+      type: 'EXACT_MATCH',
+      title: signals.shaMatch ? 'Exact match — byte-for-byte identical' : 'Exact match confirmed',
+      summary: signals.shaMatch
+        ? 'SHA-256 cryptographic hash matches exactly. The submitted file is byte-for-byte identical to the registered original.'
+        : `Perceptual similarity of ${cp}% (calibrated) confirms this is the same image — only minor re-encoding differences exist.`,
+      confidence: 100,
+    });
+    if (uuidCheck?.found && uuidCheck?.matchesOwner === true)
+      findings.push({ type: 'UUID_VERIFIED', title: 'Ownership signature verified', summary: uuidVerifiedText, confidence: 100 });
+    findings.push({ type: 'NO_MODIFICATIONS', title: 'No meaningful modifications detected', summary: 'Image content, structure, and ownership markers confirm an authentic, unmodified match to the registered original.', confidence: 100 });
+    return findings.slice(0, 3);
+  }
+
+  // ── PLATFORM_PROCESSED (replaces FORWARDED_OR_SCREENSHOT) ─────────────────
+  // Shows 3 separate finding cards: Asset Relationship | Platform Assessment | UUID Status
+  if (reportMode === 'PLATFORM_PROCESSED') {
+    const plat = platformLikelihood || { primary: 'GENERIC_RECOMPRESSED', confidence: 0.55, reasons: [] };
+    const platConfPct = Math.round((plat.confidence || 0) * 100);
+    const platLabel = {
+      WHATSAPP_LIKELY:     'WhatsApp forwarding / recompression likely',
+      INSTAGRAM_LIKELY:    'Instagram / social-media recompression likely',
+      SCREENSHOT_LIKELY:   'Screen recapture likely',
+      GENERIC_RECOMPRESSED:'Generic platform recompression detected',
+    }[plat.primary] || 'Platform recompression detected';
+    const platFindingType = {
+      WHATSAPP_LIKELY:     'WHATSAPP_FORWARDED',
+      INSTAGRAM_LIKELY:    'INSTAGRAM_FORWARDED',
+      SCREENSHOT_LIKELY:   'SCREENSHOT',
+      GENERIC_RECOMPRESSED:'WHATSAPP_FORWARDED',
+    }[plat.primary] || 'WHATSAPP_FORWARDED';
+
+    // Card 1 — Asset Relationship
+    findings.push({
+      type: 'ASSET_CONFIRMED',
+      title: 'Same asset confirmed',
+      summary: `Visual analysis confirms this is a copy of the registered asset (${cp}% calibrated perceptual similarity). Asset continuity established despite platform processing.`,
+      confidence: Math.min(92, Math.max(cp, 30) + 15),
+    });
+
+    // Card 2 — Platform Assessment (probabilistic language, never absolute)
+    const platConfLabel = plat.confidence >= 0.85 ? 'highly likely' : plat.confidence >= 0.65 ? 'likely' : 'possible';
+    findings.push({
+      type: platFindingType,
+      title: platLabel,
+      summary: `Platform processing ${platConfLabel} (${platConfPct}% confidence). Evidence: ${(plat.reasons || []).slice(0, 2).join('; ')}.`,
+      confidence: platConfPct,
+    });
+
+    // Card 3 — UUID / Ownership Status
+    const us = uuidStatus || { state: 'NOT_FOUND', confidence: 70, likelyFailureReason: null };
+    if (us.state === 'VERIFIED') {
+      findings.push({ type: 'UUID_VERIFIED', title: 'Ownership signature verified — matches registered owner', summary: uuidVerifiedText, confidence: 100 });
+    } else if (us.state === 'PARTIAL') {
+      findings.push({ type: 'UUID_DAMAGED', title: 'Ownership signature partially recovered', summary: us.likelyFailureReason || 'UUID extracted but owner match could not be confirmed.', confidence: us.confidence });
+    } else if (us.state === 'DAMAGED') {
+      findings.push({ type: 'UUID_DAMAGED', title: 'Ownership signature damaged by platform processing', summary: us.likelyFailureReason || 'Platform re-encoding destroyed the steganographic embedding.', confidence: us.confidence });
+    } else if (us.state === 'NOT_FOUND') {
+      findings.push({ type: 'UUID_ABSENT', title: 'Ownership signature not found', summary: 'No PINIT UUID could be recovered. This may be expected if the image was heavily re-encoded.', confidence: us.confidence });
+    } else if (us.state === 'INVALID_OWNER') {
+      findings.push({ type: 'UUID_MISMATCH', title: 'Ownership conflict — UUID does not match registered owner', summary: us.likelyFailureReason || 'The embedded UUID belongs to a different user.', confidence: 95 });
+    }
+
+    // "Resolution adjusted by platform" must NOT appear when a geometric transform
+    // (crop/resize/rotate) already explains the dimension change.
+    // Only show when the resolution shift is unexplained by geometry — i.e., the
+    // platform itself is responsible for resizing the image.
+    const geometricExplainsResolution =
+      transformations.cropped?.detected ||
+      transformations.resized?.detected ||
+      transformations.rotated?.detected;
+    if (!geometricExplainsResolution && origW > 0 && (Math.abs(uploadedW - origW) > 50 || Math.abs(uploadedH - origH) > 50)) {
+      findings.push({ type: 'RESOLUTION_CHANGED', title: 'Resolution adjusted by platform',
+        summary: `Original: ${origW}×${origH} → Submitted: ${uploadedW}×${uploadedH}. Consistent with platform resizing.`, confidence: 82 });
+    }
+    return findings.slice(0, 5);
+  }
+
+  // ── UUID_DAMAGE ──────────────────────────────────────────────────────────
+  if (reportMode === 'UUID_DAMAGE') {
+    findings.push({
+      type: 'ASSET_CONFIRMED',
+      title: 'Original asset relationship confirmed',
+      summary: `Visual analysis confirms this image is derived from the registered original (${cp}% calibrated similarity). Asset continuity established despite missing signature.`,
+      confidence: Math.min(92, cp + 10),
+    });
+    findings.push({
+      type: 'UUID_DAMAGED',
+      title: 'Ownership signature damaged or unreadable',
+      summary: `PINIT UUID could not be recovered. ${transformations.uuidDamaged?.likelyCause || 'Editing, compression, or platform processing after registration likely destroyed the embedding.'}`,
+      confidence: transformations.uuidDamaged?.confidence ?? 70,
+    });
+    if (uuidCheck?.found && uuidCheck?.matchesOwner === false) {
+      findings.push({ type: 'UUID_MISMATCH', title: 'Ownership conflict detected', summary: 'A signature was found but it does not match the vault owner. This may indicate asset misuse or fraud.', confidence: 90 });
+    }
+    findings.push({
+      type: 'LINKAGE_WEAKENED',
+      title: 'Ownership cannot be cryptographically proven',
+      summary: 'Without a recoverable PINIT signature, definitive ownership linkage is not possible. Visual similarity supports continuity but not cryptographic proof.',
+      confidence: 80,
+    });
+    return findings.slice(0, 4);
+  }
+
+  // ── SINGLE_CHANGE / MULTI_CHANGE ─────────────────────────────────────────
+  // Asset relationship confirmed first.
+  // For crop cases, pHash is inherently low (comparing a region to the full image).
+  // Explain this explicitly so the user isn't confused by the low similarity number.
+  const isCropCase = !!(transformations.cropped?.detected);
+  const assetConfirmSummary = isCropCase
+    ? `The submitted image is a cropped region of the registered asset. Perceptual similarity (${cp}%) is expected to be lower for crops — the sub-region pHash and geometry confirm continuity.`
+    : `The submitted image is a derivative of the registered asset (${cp}% calibrated perceptual similarity). Asset continuity is established.`;
+  findings.push({
+    type: 'ASSET_CONFIRMED',
+    title: 'Original asset relationship confirmed',
+    summary: assetConfirmSummary,
+    confidence: Math.min(94, Math.max(cp, 30) + 12),  // floor at 30 for crops
+  });
+
+  if (transformations.rotated?.detected)
+    findings.push({
+      type: 'ROTATED',
+      title: `Image rotated ${transformations.rotated.angle}° after registration`,
+      summary: `The submitted image is a ${transformations.rotated.angle}° rotated version of the original. Content and structure remain consistent with the registered asset.`,
+      confidence: transformations.rotated.confidence,
+    });
+
+  if (transformations.cropped?.detected) {
+    const c = transformations.cropped;
+    findings.push({
+      type: 'CROPPED',
+      title: 'Cropping detected',
+      // Collapse crop + resolution + aspect-ratio findings into ONE reason
+      summary: `Dimensions changed from ${c.originalDimensions || 'original'} to ${c.submittedDimensions}${c.retainedAreaPercent !== null ? ` — ~${c.retainedAreaPercent}% of original content retained` : ''}. ${c.cropRegion || ''}`,
+      confidence: c.confidence,
+    });
+  }
+
+  if (transformations.resized?.detected) {
+    const r = transformations.resized;
+    findings.push({
+      type: 'RESIZED',
+      title: 'Proportional resize detected',
+      // Collapse resize + dimension change into ONE reason
+      summary: `Image uniformly scaled from ${r.originalDimensions} to ${r.submittedDimensions} (factor ×${r.scaleX}). Aspect ratio preserved — no cropping.`,
+      confidence: r.confidence,
+    });
+  }
+
+  // UUID — one finding, always last
+  if (uuidCheck?.found && uuidCheck?.matchesOwner === true)
+    findings.push({ type: 'UUID_VERIFIED', title: 'Ownership signature verified', summary: uuidVerifiedText, confidence: 100 });
+  else if (transformations.uuidDamaged?.detected)
+    findings.push({
+      type: 'UUID_DAMAGED',
+      title: 'Ownership signature damaged',
+      summary: transformations.uuidDamaged.likelyCause,
+      confidence: transformations.uuidDamaged.confidence,
+    });
+  else if (uuidCheck?.found && uuidCheck?.matchesOwner === false)
+    findings.push({ type: 'UUID_MISMATCH', title: 'Ownership conflict — different owner detected', summary: 'The embedded signature does not match the registered vault owner.', confidence: 95 });
+
+  const max = reportMode === 'MULTI_CHANGE' ? 6 : 4;
+  return findings.filter(f => (f.confidence ?? 0) >= 60).slice(0, max);
+};
+
+// Returns a human-readable verdict label + tier based on a 0-100 confidence score.
+const getMatchVerdict = (confidence) => {
+  if (confidence >= 95) return { label: 'Exact Match',  tier: 'exact'  };
+  if (confidence >= 75) return { label: 'Strong Match', tier: 'strong' };
+  if (confidence >= 50) return { label: 'Likely Match', tier: 'likely' };
+  if (confidence >= 25) return { label: 'Weak Match',   tier: 'weak'   };
+  return                       { label: 'No Match',     tier: 'none'   };
+};
+
+// Averages whatever similarity signals are available (null values are excluded).
+const computeOverallSimilarity = (calibPHash, histSim) => {
+  const values = [calibPHash, histSim].filter(v => v !== null && v !== undefined);
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+};
+
+// ── Stage 3C: Assemble final ComparisonResult ────────────────────────────────
+const buildComparisonResult = (signals, verdict, relConf, reportMode, transformations, visibleFindings, legacy) => {
+  const {
+    calibPHash, histSim, pSim, uuidCheck, pixelAnalysis, editingTool,
+    pHashAlgorithm, pHashNote, origPHash, uploadedPHash, originalCaptureTime,
+    uploadedFile, uploadedW, uploadedH, screenshotIndicators,
+  } = signals;
+
+  // uuidStatus is now provided by classifyUUIDStatus (Layer 3) via signals.uuidStatus.
+  // Keep a minimal legacy-compat object for fields that read from it directly.
+  const uuidStatus = signals.uuidStatus || {
+    found: uuidCheck?.found || false,
+    confidence: uuidCheck?.found ? (uuidCheck?.matchesOwner === true ? 100 : 60) : 0,
+    extractedValue: uuidCheck?.userId || null,
+    status: uuidCheck?.found
+      ? (uuidCheck?.matchesOwner === true ? 'VERIFIED' : uuidCheck?.matchesOwner === false ? 'INVALID' : 'PARTIAL')
+      : 'NOT_FOUND',
+  };
+
+  const matchVerdict = getMatchVerdict(legacy.confidence);
+
+  return {
+    // ── New decision schema ──────────────────────────────────────────────────
+    verdict, reportMode, relationshipConfidence: relConf, matchScore: legacy.confidence,
+    uuidStatus, visibleFindings, transformations,
+    technicalSignals: {
+      phashSimilarity:     calibPHash,
+      phashRaw:            pSim,
+      histogramSimilarity: histSim,
+      pixelSimilarity:     pixelAnalysis?.pixelSimilarity ?? null,
+      metadataTool:        editingTool || null,
+      whatsappScore:       signals.platformLikelihood?.primary === 'WHATSAPP_LIKELY'
+                             ? Math.round((signals.platformLikelihood.confidence || 0) * 100) : 0,
+      instagramScore:      signals.platformLikelihood?.primary === 'INSTAGRAM_LIKELY'
+                             ? Math.round((signals.platformLikelihood.confidence || 0) * 100) : 0,
+      screenshotScore:     signals.platformLikelihood?.primary === 'SCREENSHOT_LIKELY'
+                             ? Math.round((signals.platformLikelihood.confidence || 0) * 100)
+                             : Math.min(100, (screenshotIndicators?.length ?? 0) * 33),
+      recompressionScore:  signals.platformLikelihood?.primary !== 'NONE'
+                             ? Math.round((signals.platformLikelihood?.confidence || 0) * 100) : 0,
+      uuidRecoveryScore:   signals.uuidStatus?.confidence ?? uuidStatus.confidence,
+    },
+
+    // ── 3-layer result schema ────────────────────────────────────────────────
+    assetRelationship: verdict === 'EXACT_MATCH' ? 'EXACT_MATCH'
+      : verdict === 'POSSIBLE_DERIVATIVE'        ? 'POSSIBLE_DERIVATIVE'
+      : verdict === 'UNRELATED_IMAGE'            ? 'UNRELATED_IMAGE'
+      : 'SAME_ASSET',
+    platformLikelihood: signals.platformLikelihood || null,
+    uuidStatus:         signals.uuidStatus         || null,
+
+    // ── Legacy fields (backend save + HTML report backward compat) ───────────
+    changes:      visibleFindings.map(f => ({ type: (f.confidence??0)>=85?'danger':(f.confidence??0)>=65?'warning':'info', category: f.type, text: f.summary })),
+    isTampered:   legacy.isTampered,
+    isModified:   legacy.isModified,
+    verdict3tier: legacy.verdict3tier,
+    visualVerdict:  matchVerdict?.label || verdict,
+    finalVerdict:   matchVerdict?.label || verdict,
+    matchVerdict, confidence: legacy.confidence,
+    pHashSim: pSim, pHashRaw: pSim, pHashCalibrated: calibPHash,
+    pHashNote, pHashAlgorithm, histSim,
+    detectedRotation: signals.detectedRotation,
+    pixelAnalysis, editingTool, uuidCheck, origPHash, uploadedPHash,
+    originalCaptureTime, modifiedFileTime: legacy.modifiedFileTime,
+    uploadedResolution: `${uploadedW} x ${uploadedH}`,
+    uploadedSize: `${(uploadedFile.size / 1024).toFixed(1)} KB`,
+    timestamp: new Date().toISOString(),
+    exactMatch: verdict === 'EXACT_MATCH' && !!signals.shaMatch,
+  };
+};
+
+// ── Main orchestrator ─────────────────────────────────────────────────────────
 const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
-  const changes   = [];
   const uploadedW = uploadedCanvas.width;
   const uploadedH = uploadedCanvas.height;
-
-  // Parse stored resolution ("1920 x 1080" or "1920x1080")
-  const resParts = (originalAsset.resolution || originalAsset.assetResolution || '0 x 0').split(/\s*x\s*/i);
-  const origW = parseInt(resParts[0]) || 0;
-  const origH = parseInt(resParts[1]) || 0;
-
+  const resParts  = (originalAsset.resolution || originalAsset.assetResolution || '0 x 0').split(/\s*x\s*/i);
+  const origW     = parseInt(resParts[0]) || 0;
+  const origH     = parseInt(resParts[1]) || 0;
   const originalCaptureTime = originalAsset.captureTimestamp || originalAsset.capture_timestamp ||
     originalAsset.timestamp || originalAsset.dateEncrypted || null;
   const rawModifiedFileTime = uploadedFile.lastModified || null;
 
-  // ── STEP A: EXIF / editing tool detection ────────────────────────────────────
-  const editingTool = await extractEditingToolFromFile(uploadedFile, uploadedW, uploadedH);
-
-  // ── STEP B: SHA-256 exact match (strongest possible signal — short-circuit) ──
-  const uploadedSHA = await computeFileSHA256(uploadedFile);
-  const origSHA     = originalAsset.fileHash || originalAsset.file_hash || null;
-
-  if (origSHA && uploadedSHA && origSHA === uploadedSHA) {
-    return {
-      changes: [{ type:'info', category:'Integrity', text:'SHA-256 matches exactly — files are byte-for-byte identical.' }],
-      isTampered:false, isModified:false, verdict3tier:'CLEAN',
-      visualVerdict:'Exact Match', confidence:100,
-      pHashSim:100, histSim:100, pixelAnalysis:null, editingTool:null,
-      uuidCheck:null, pHashNote:null, pHashAlgorithm:null,
-      originalCaptureTime, modifiedFileTime:null,
-      origPHash: originalAsset.visualFingerprint || originalAsset.visual_fingerprint,
-      uploadedPHash: originalAsset.visualFingerprint || originalAsset.visual_fingerprint,
-      uploadedResolution:`${uploadedW} x ${uploadedH}`,
-      uploadedSize:`${(uploadedFile.size/1024).toFixed(1)} KB`,
-      timestamp:new Date().toISOString(), exactMatch:true,
-    };
-  }
-
-  // ── STEP C: UUID / ownership extraction ─────────────────────────────────────
-  const uuidCheck = checkUUIDAndOwnership(uploadedCanvas, originalAsset);
-
-  if (uuidCheck.found) {
-    if (uuidCheck.matchesOwner === false)
-      changes.push({ type:'danger', category:'Ownership',
-        text:`UUID found but belongs to a different user (extracted: ${uuidCheck.userId?.slice(0,16)}…). Possible stolen or forged asset.` });
-    else if (uuidCheck.matchesOwner === true)
-      changes.push({ type:'info', category:'Ownership', text:'UUID verified — ownership confirmed. Extracted user ID matches vault owner.' });
-    else
-      changes.push({ type:'info', category:'Ownership',
-        text:`PINIT UUID detected (user: ${uuidCheck.userId?.slice(0,20)}…). Vault has no user_id to cross-check ownership.` });
-    if (uuidCheck.rotationDetected > 0)
-      changes.push({ type:'warning', category:'Ownership',
-        text:`UUID recovered after applying ${uuidCheck.rotationDetected}° rotation correction — image was rotated after embedding.` });
-    if (uuidCheck.originalResolution) {
-      const embedded = uuidCheck.originalResolution.replace(/\s/g,'').toLowerCase();
-      const current  = `${uploadedW}x${uploadedH}`;
-      if (embedded !== current)
-        changes.push({ type:'warning', category:'Crop/Resize',
-          text:`Embedded original resolution (${uuidCheck.originalResolution}) differs from current (${uploadedW}×${uploadedH}) — image was resized or cropped after embedding.` });
-    }
-  } else {
-    changes.push({ type:'danger', category:'Ownership',
-      text:'No PINIT ownership signature found. UUID embedding survives geometric cropping but is destroyed by brightness, contrast, or any pixel-level adjustment — its absence is evidence of pixel manipulation after embedding.' });
-  }
-
-  // ── STEP D: pHash visual fingerprint (primary visual signal) ─────────────────
-  const origPHash = originalAsset.visualFingerprint || originalAsset.visual_fingerprint || null;
-  const { sim: pSim, rotation: detectedRotation, algorithm: pHashAlgorithm, isLegacy: pHashIsLegacy, note: pHashNote } =
+  // ── Collect all raw signals ──────────────────────────────────────────────
+  const editingTool   = await extractEditingToolFromFile(uploadedFile, uploadedW, uploadedH);
+  const uploadedSHA   = await computeFileSHA256(uploadedFile);
+  const origSHA       = originalAsset.fileHash || originalAsset.file_hash || null;
+  const shaMatch      = !!(origSHA && uploadedSHA && origSHA === uploadedSHA);
+  const uuidCheck     = checkUUIDAndOwnership(uploadedCanvas, originalAsset);
+  const origPHash     = originalAsset.visualFingerprint || originalAsset.visual_fingerprint || null;
+  const { sim: pSim, rotation: detectedRotation, algorithm: pHashAlgorithm, note: pHashNote } =
     pHashSimWithRotationCompat(uploadedCanvas, origPHash);
   const uploadedPHash = computePerceptualHashFromCanvas(uploadedCanvas);
+  const calibPHashGlobal = calibratePHash(pSim);
 
-  // ── STEP E: Rotation-correct the canvas before pixel diff ────────────────────
-  // FIX: Without this, a 90° rotation causes ~50% false pixel diff.
+  // Multi-region pHash: compare uploaded against quadrants/halves of the original
+  // thumbnail. For a cropped image, the best-matching region will score much
+  // higher than the global pHash comparison. Use the BEST of global vs regional.
+  const thumbSrcEarly = originalAsset.thumbnail || originalAsset.thumbnailUrl ||
+    originalAsset.thumbnail_url || originalAsset.cloudinary_url;
+  const mrResult = await multiRegionPHashCompare(thumbSrcEarly, uploadedCanvas, origPHash?.length);
+  // Use multi-region calibrated score if it's significantly better than global
+  const calibPHash = (mrResult.bestCalib !== null && mrResult.bestCalib > (calibPHashGlobal ?? -100))
+    ? mrResult.bestCalib
+    : calibPHashGlobal;
   const alignedCanvas = (detectedRotation && detectedRotation !== 0)
-    ? rotateCanvas(uploadedCanvas, (360 - detectedRotation) % 360)
-    : uploadedCanvas;
-
-  // ── STEP F: Pixel diff against thumbnail (supporting signal) ─────────────────
-  let pixelAnalysis = null;
+    ? rotateCanvas(uploadedCanvas, (360 - detectedRotation) % 360) : uploadedCanvas;
   const thumbSrc = originalAsset.thumbnail || originalAsset.thumbnailUrl ||
     originalAsset.thumbnail_url || originalAsset.cloudinary_url;
+  let pixelAnalysis = null;
   if (thumbSrc) pixelAnalysis = await runPixelDiff(thumbSrc, alignedCanvas);
-
-  // ── STEP G: Colour histogram (secondary signal) ───────────────────────────────
   let histSim = null;
   if (thumbSrc) {
     try {
@@ -779,167 +1789,75 @@ const runComparison = async (uploadedCanvas, uploadedFile, originalAsset) => {
       histSim = histogramSimilarity(computeColorHistogram(origThumb), computeColorHistogram(uploadedCanvas));
     } catch { histSim = null; }
   }
+  const screenshotIndicators = detectScreenshotIndicators(uploadedFile, pixelAnalysis, editingTool, uploadedCanvas);
 
-  // ── STEP H: Structural comparisons ───────────────────────────────────────────
-  // H1: Resolution
-  const wDiff = Math.abs(uploadedW - origW), hDiff = Math.abs(uploadedH - origH);
-  const resChanged = origW > 0 && ((wDiff/origW)>0.10 || (hDiff/(origH||1))>0.10 || wDiff>100 || hDiff>100);
-  if (resChanged) {
-    if (uploadedW < origW)
-      changes.push({ type:'warning', category:'Resolution', text:`Downscaled: ${origW}×${origH} → ${uploadedW}×${uploadedH} (${Math.round((uploadedW/origW)*100)}% of original).` });
-    else if (uploadedW > origW)
-      changes.push({ type:'info', category:'Resolution', text:`Upscaled: ${origW}×${origH} → ${uploadedW}×${uploadedH}.` });
-    else
-      changes.push({ type:'warning', category:'Resolution', text:`Dimensions changed: ${origW}×${origH} → ${uploadedW}×${uploadedH}.` });
-  }
-
-  // H2: Aspect ratio / crop
-  if (origW > 0 && Math.abs((uploadedW/uploadedH) - (origW/origH)) > 0.08)
-    changes.push({ type:'danger', category:'Cropping',
-      text:`Aspect ratio changed (${(origW/origH).toFixed(2)} → ${(uploadedW/uploadedH).toFixed(2)}) — image was cropped.` });
-
-  // H3: File size
-  // FIX: fileSize stored as "245.50 KB" string. Old code divided by 1024 again → NaN.
-  // Now: parseFloat("245.50 KB") = 245.50 ✓
-  const origSizeKB     = fmtFileSize(originalAsset.fileSize || originalAsset.file_size);
-  const uploadedSizeKB = uploadedFile.size / 1024;
-  if (origSizeKB && origSizeKB > 1) {
-    const pctDiff = ((origSizeKB - uploadedSizeKB) / origSizeKB) * 100;
-    if (pctDiff > 20)
-      changes.push({ type:'warning', category:'Compression',
-        text:`File compressed — size reduced by ${Math.round(pctDiff)}% (${origSizeKB.toFixed(0)} KB → ${uploadedSizeKB.toFixed(0)} KB).` });
-    else if (pctDiff < -20)
-      changes.push({ type:'info', category:'Compression',
-        text:`File grew — size increased by ${Math.round(Math.abs(pctDiff))}% (${origSizeKB.toFixed(0)} KB → ${uploadedSizeKB.toFixed(0)} KB).` });
-  }
-
-  // H4: Format
-  const uploadedFmt = (uploadedFile.type || '').split('/')[1]?.toUpperCase();
-  const origFmt     = (originalAsset.fileName || originalAsset.file_name || '').split('.').pop()?.toUpperCase();
-  if (uploadedFmt && origFmt && uploadedFmt !== origFmt && origFmt !== 'PNG')
-    changes.push({ type:'info', category:'Format', text:`Format changed: ${origFmt} → ${uploadedFmt}.` });
-
-  // ── STEP I: Pixel-level findings ─────────────────────────────────────────────
-  if (pixelAnalysis) {
-    const { changedPct, hotRegions, brightShift, rShift, gShift, bShift } = pixelAnalysis;
-    if (changedPct > 0.5 && changedPct <= 5)
-      changes.push({ type:'warning', category:'Pixel Edit',
-        text:`Minor pixel edits — ${changedPct}% of pixels changed vs thumbnail. (Note: JPEG compression alone causes minor pixel differences.)` });
-    else if (changedPct > 5 && changedPct <= 20)
-      changes.push({ type:'warning', category:'Pixel Edit', text:`Moderate edits — ${changedPct}% of pixels changed.` });
-    else if (changedPct > 20)
-      changes.push({ type:'danger', category:'Pixel Edit', text:`Extensive pixel modifications — ${changedPct}% of image altered.` });
-    hotRegions.slice(0,3).forEach(r =>
-      changes.push({ type: r.severity==='high' ? 'danger' : 'warning', category:'Region Edit',
-        text:`Localised change in ${r.name} region (intensity: ${r.score}/255).` })
-    );
-    if (Math.abs(brightShift) > 5)
-      changes.push({ type:'info', category:'Colour', text:`Brightness ${brightShift>0?'increased':'decreased'} by ~${Math.abs(brightShift).toFixed(1)} pts.` });
-    const maxCh = Math.max(Math.abs(rShift), Math.abs(gShift), Math.abs(bShift));
-    if (maxCh > 8) {
-      const desc = [];
-      if (Math.abs(rShift)>8) desc.push(`R ${rShift>0?'+':''}${rShift}`);
-      if (Math.abs(gShift)>8) desc.push(`G ${gShift>0?'+':''}${gShift}`);
-      if (Math.abs(bShift)>8) desc.push(`B ${bShift>0?'+':''}${bShift}`);
-      changes.push({ type:'info', category:'Colour', text:`Colour grading applied — channel shifts: ${desc.join(', ')}.` });
-    }
-  }
-
-  // ── STEP J: pHash visual verdict ─────────────────────────────────────────────
-  let visualVerdict = 'Unknown';
-  if (pSim !== null) {
-    if (detectedRotation && detectedRotation !== 0)
-      changes.push({ type:'warning', category:'Rotation',
-        text:`Image was rotated ${detectedRotation}° — best pHash match found at that rotation (similarity ${pSim}%).` });
-    if      (pSim < 40) { changes.push({ type:'danger',  category:'Visual', text:`Completely different image — perceptual similarity only ${pSim}%.` }); visualVerdict='Completely Different'; }
-    else if (pSim < 60) { changes.push({ type:'danger',  category:'Visual', text:`High visual divergence — perceptual similarity ${pSim}%.` });        visualVerdict='Heavily Modified'; }
-    else if (pSim < 75) { changes.push({ type:'warning', category:'Visual', text:`Significant visual changes — perceptual similarity ${pSim}%.` });     visualVerdict='Moderately Modified'; }
-    else if (pSim < 90) { changes.push({ type:'warning', category:'Visual', text:`Noticeable visual changes — perceptual similarity ${pSim}%.` });      visualVerdict='Lightly Modified'; }
-    else                { visualVerdict = pSim >= 99 ? 'Near-Identical' : 'High Similarity'; }
-  } else if (histSim !== null && histSim < 40) {
-    changes.push({ type:'danger', category:'Visual', text:`Very different colour profile — histogram similarity only ${histSim}% (no fingerprint stored for deeper comparison).` });
-    visualVerdict = 'Likely Different';
-  }
-
-  if (histSim !== null && pSim !== null && histSim < 40 && pSim < 60)
-    changes.push({ type:'danger', category:'Colour Profile', text:`Colour histogram very different (${histSim}%) — confirms different image content.` });
-
-  if (editingTool)
-    changes.push({ type:'info', category:'Tool', text:`Editing software detected in file metadata: ${editingTool}.` });
-
-  // ── STEP K: 3-TIER VERDICT ────────────────────────────────────────────────────
-  // FIX (critical): Old code: isTampered = changes.some(type==='danger'||type==='warning')
-  // This flagged WhatsApp recompression, brightness shifts, and rotation as TAMPERED.
-  // New 3-tier system: CLEAN / MODIFIED / TAMPERED
-  //
-  // TAMPERED: strong visual or ownership evidence of intentional alteration
-  //   - pHash < 70 (visually very different)
-  //   - danger-type change detected (crop, extensive pixel edit, wrong UUID owner)
-  //
-  // MODIFIED: technical changes but not necessarily malicious
-  //   - compression, minor resize, rotation, metadata stripped
-  //   - warning-level changes only
-  //   - UUID missing (could just be an unregistered copy)
-  //
-  // CLEAN: no significant changes (within noise of normal re-encoding)
-
-  const dangerChanges   = changes.filter(c => c.type === 'danger' && c.category !== 'Ownership');
-  const ownerMismatch   = changes.some(c => c.type === 'danger' && c.category === 'Ownership');
-  const warningChanges  = changes.filter(c => c.type === 'warning');
-  const strongTamper    = dangerChanges.length > 0 || ownerMismatch || (pSim !== null && pSim < 70);
-  const hasWarnings     = warningChanges.length > 0 || (pSim !== null && pSim < 92) || !uuidCheck.found;
-
-  let verdict3tier, isTampered, isModified;
-  if (strongTamper)     { verdict3tier='TAMPERED'; isTampered=true;  isModified=false; }
-  else if (hasWarnings) { verdict3tier='MODIFIED'; isTampered=false; isModified=true;  }
-  else                  { verdict3tier='CLEAN';    isTampered=false; isModified=false; }
-
-  const modifiedFileTime = (isTampered || isModified) ? rawModifiedFileTime : null;
-
-  // ── STEP L: Confidence score ──────────────────────────────────────────────────
-  // Base from visual signals
-  let confidence = 0;
-  if (pSim !== null) {
-    confidence = pSim;
-    if (histSim !== null) confidence = Math.round(confidence * 0.70 + histSim * 0.30);
-    // Pixel penalty reduced — pixel diff vs thumbnail is noisy for cropped images
-    if (pixelAnalysis) confidence = Math.round(Math.max(0, confidence - Math.min(10, pixelAnalysis.changedPct * 0.2)));
-  } else if (histSim !== null) {
-    confidence = histSim;
-    if (pixelAnalysis) confidence = Math.round(Math.max(0, confidence - Math.min(10, pixelAnalysis.changedPct * 0.2)));
-  } else if (pixelAnalysis) {
-    confidence = pixelAnalysis.pixelSimilarity;
-  }
-
-  // Structural penalties — capped so they can't stack to 0 on a legitimate modified image
-  let totalPenalty = 0;
-  if (resChanged)                                              totalPenalty += 8;
-  if (changes.some(c => c.category === 'Cropping'))           totalPenalty += 8;
-  if (changes.some(c => c.category === 'Compression'))        totalPenalty += 5;
-  if (changes.some(c => c.category === 'Rotation'))           totalPenalty += 3;
-  if (!uuidCheck.found)                                        totalPenalty += 12;
-  if (uuidCheck.found && uuidCheck.matchesOwner === false)     totalPenalty += 30;
-  // Cap total structural penalty — prevents legitimate modified images hitting 0%
-  totalPenalty = Math.min(totalPenalty, 30);
-  confidence = Math.max(0, confidence - totalPenalty);
-
-  // UUID ownership confirmed = cryptographic proof this is the same asset.
-  // Even a heavily cropped + filtered image should never show 0% if UUID matches.
-  if (uuidCheck.found && uuidCheck.matchesOwner === true)  confidence = Math.max(confidence, 38);
-  else if (uuidCheck.found && uuidCheck.matchesOwner === null) confidence = Math.max(confidence, 22);
-
-  confidence = Math.min(100, confidence);
-
-  return {
-    changes, isTampered, isModified, verdict3tier, visualVerdict, confidence,
-    pHashSim: pSim, pHashNote, pHashAlgorithm, histSim, detectedRotation,
-    pixelAnalysis, editingTool, uuidCheck, origPHash, uploadedPHash,
-    originalCaptureTime, modifiedFileTime,
-    uploadedResolution: `${uploadedW} x ${uploadedH}`,
-    uploadedSize: `${(uploadedFile.size/1024).toFixed(1)} KB`,
-    timestamp: new Date().toISOString(), exactMatch: false,
+  const signals = {
+    shaMatch, calibPHash, histSim, pSim, uuidCheck, pixelAnalysis,
+    origW, origH, uploadedW, uploadedH, detectedRotation,
+    editingTool, origSHA, uploadedSHA,
+    screenshotIndicators,
+    origPHash, uploadedPHash, pHashAlgorithm, pHashNote,
+    originalCaptureTime, uploadedFile, thumbSrc,
+    // 3-layer fields — filled after classification
+    platformLikelihood: null,
+    uuidStatus: null,
   };
+
+  // ── Layer 1: Asset Relationship ──────────────────────────────────────────
+  const { assetRelationship: rawAssetRel, verdict: rawVerdict, confidence: relConf } = classifyRelationship(signals);
+
+  // ── Layer 2: Platform Likelihood (probabilistic, gated) ──────────────────
+  const platformLikelihood = assessPlatformLikelihood(editingTool, uploadedCanvas, uploadedFile, rawAssetRel, pixelAnalysis);
+
+  // ── Exact-match downgrade: pHash similarity alone NEVER proves exact identity ──
+  //
+  // The only valid path to EXACT_MATCH is SHA-256 byte-identity (signals.shaMatch=true).
+  // pHash scales every image to 32×32 before comparison — it cannot detect:
+  //   • format changes (JPEG → PNG, PNG → JPEG)
+  //   • JPEG re-encoding at different quality
+  //   • platform processing (WhatsApp, Instagram, screenshot tools)
+  //   • metadata stripping
+  //   • any other modification that preserves visual appearance
+  //
+  // If shaMatch=false, the file was modified in some way — even if we can't detect
+  // the specific platform (e.g. PNG format, unknown dimensions, no metadata).
+  // Always downgrade to SAME_ASSET so report says "modification detected" not "exact match".
+  //
+  // UUID VERIFIED is independent — it means ownership survived, not that the file is
+  // byte-identical. Both can be true simultaneously: same owner, different encoding.
+  const verdict = (rawVerdict === 'EXACT_MATCH' && !signals.shaMatch)
+    ? 'SAME_ASSET_MULTI_CHANGE' : rawVerdict;
+  const assetRelationship = verdict !== rawVerdict ? 'SAME_ASSET' : rawAssetRel;
+
+  // ── Transformations (same-asset only) ────────────────────────────────────
+  const isSameAsset   = assetRelationship === 'SAME_ASSET' || assetRelationship === 'EXACT_MATCH';
+  const transformations = isSameAsset ? detectTransformations(signals, verdict) : {};
+
+  // ── Layer 3: UUID Status ─────────────────────────────────────────────────
+  const uuidStatus = classifyUUIDStatus(uuidCheck, platformLikelihood, transformations);
+  // Store on signals so buildComparisonResult can include them
+  signals.platformLikelihood = platformLikelihood;
+  signals.uuidStatus         = uuidStatus;
+
+  // ── Report mode + findings ───────────────────────────────────────────────
+  const reportMode      = determineReportMode(verdict, transformations, platformLikelihood);
+  const visibleFindings = buildVisibleFindings(verdict, reportMode, transformations, signals, uuidCheck, platformLikelihood, uuidStatus);
+
+  // Overall match score (used for the % display)
+  const overallSim  = computeOverallSimilarity(calibPHash, histSim);
+  const uuidAdj     = uuidCheck?.found && uuidCheck?.matchesOwner === true ? 6
+                    : uuidCheck?.found && uuidCheck?.matchesOwner === false ? -8 : 0;
+  const confidence  = Math.max(0, Math.min(100, Math.round(overallSim + uuidAdj)));
+  const isTampered  = verdict === 'UNRELATED_IMAGE';
+  const isModified  = isSameAsset && verdict !== 'EXACT_MATCH';
+  const verdict3tier = isTampered ? 'TAMPERED' : isModified ? 'MODIFIED' : 'CLEAN';
+
+  return buildComparisonResult(signals, verdict, relConf, reportMode, transformations, visibleFindings, {
+    confidence, isTampered, isModified, verdict3tier,
+    modifiedFileTime: (isModified || isTampered) ? rawModifiedFileTime : null,
+  });
 };
+
 
 // =============================================================================
 // PART 11: HTML report download
@@ -1272,23 +2190,7 @@ function AssetTrackingPage() {
 
   const hasRichData = (a) => !!(a.fileHash||a.file_hash||a.visualFingerprint||a.visual_fingerprint||a.certificateId||a.certificate_id);
 
-  const verdictBanner = (v3) => {
-    if (v3 === 'TAMPERED') return { cls:'tampered', icon:<AlertTriangle size={28}/>, label:'🚨 TAMPERED — Strong evidence of deliberate alteration', sub:'This image shows clear signs of intentional modification.' };
-    if (v3 === 'MODIFIED') {
-      const hasCrop    = comparisonResult?.changes?.some(c => c.category === 'Cropping' || c.category === 'Crop/Resize');
-      const uuidGone   = comparisonResult && !comparisonResult.uuidCheck?.found;
-      const hasBright  = comparisonResult?.changes?.some(c => c.category === 'Colour');
-      let sub = 'Technical changes detected — image is a modified derivative of the registered original.';
-      if (hasCrop && uuidGone && hasBright)
-        sub = 'Image was cropped and pixel-edited (brightness/contrast). The embedded UUID was destroyed by pixel manipulation — this is forensic evidence of editing after registration.';
-      else if (uuidGone && hasCrop)
-        sub = 'Image was cropped after registration. UUID embedding survives simple crops but was not found — pixel-level changes likely also applied.';
-      else if (uuidGone)
-        sub = 'Embedded UUID not found. UUID survives cropping alone but is destroyed by brightness, contrast, or filter adjustments — its absence indicates pixel-level editing.';
-      return { cls:'modified', icon:<AlertTriangle size={28} style={{color:'#dd6b20'}}/>, label:'⚡ MODIFIED — This image is a derivative of the registered original', sub };
-    }
-    return { cls:'clean', icon:<CheckCircle size={28}/>, label:'✓ CLEAN — No significant changes detected', sub:'Image matches the vault original within normal encoding tolerances.' };
-  };
+  // verdictBanner removed — report rendering uses reportMode + visibleFindings directly
 
   return (
     <div className="asset-tracking-page">
@@ -1485,161 +2387,199 @@ function AssetTrackingPage() {
 
               {/* ── Results ─────────────────────────────────────────────────── */}
               {comparisonResult && (() => {
-                const vb = verdictBanner(comparisonResult.verdict3tier);
+                const {
+                  verdict, reportMode, visibleFindings, transformations,
+                  uuidCheck, confidence, exactMatch, pHashNote,
+                  pHashCalibrated, pHashSim, histSim, pHashAlgorithm, editingTool,
+                  platformLikelihood: platResult, uuidStatus: uuidSt,
+                } = comparisonResult;
+
+                // Primary banner config per report mode
+                const PLAT_ICON = { WHATSAPP_LIKELY:'📱', INSTAGRAM_LIKELY:'📸', SCREENSHOT_LIKELY:'📷', GENERIC_RECOMPRESSED:'🔄', NONE:'🔄' };
+                const platIcon = PLAT_ICON[platResult?.primary] || '📤';
+                const platHeadline = {
+                  WHATSAPP_LIKELY:     'Asset Match — WhatsApp Processing Likely',
+                  INSTAGRAM_LIKELY:    'Asset Match — Instagram Processing Likely',
+                  SCREENSHOT_LIKELY:   'Asset Match — Screen Recapture Likely',
+                  GENERIC_RECOMPRESSED:'Asset Match — Platform Recompression Detected',
+                }[platResult?.primary] || 'Asset Match — Platform Processing Detected';
+                const MODE_CFG = {
+                  EXACT_MATCH:        { bg:'#c6f6d5', border:'#9ae6b4', color:'#22543d', icon:'✅', headline:'Exact Match — Confirmed' },
+                  SINGLE_CHANGE:      { bg:'#ebf8ff', border:'#90cdf4', color:'#2c5282', icon:'🔍', headline:'Asset Match — Modification Detected' },
+                  MULTI_CHANGE:       { bg:'#feebc8', border:'#fbd38d', color:'#7b341e', icon:'⚠️', headline:'Asset Match — Multiple Changes Detected' },
+                  PLATFORM_PROCESSED: { bg:'#e9d8fd', border:'#d6bcfa', color:'#553c9a', icon:platIcon, headline:platHeadline },
+                  UUID_DAMAGE:        { bg:'#fef3c7', border:'#fde68a', color:'#92400e', icon:'🔓', headline:'Asset Match — Ownership Signature Damaged' },
+                  MISMATCH:           { bg:'#fff5f5', border:'#feb2b2', color:'#9b2c2c', icon:'❌', headline:'No Match — Unrelated Image' },
+                };
+                const cfg = MODE_CFG[reportMode] || MODE_CFG.MISMATCH;
+
+                // Per-finding styling
+                const FINDING_CFG = {
+                  NO_MATCH:            { icon:'❌', bg:'#fff5f5', border:'#fed7d7', color:'#9b2c2c' },
+                  LOW_SIMILARITY:      { icon:'📉', bg:'#fff5f5', border:'#fed7d7', color:'#9b2c2c' },
+                  NO_CONTINUITY:       { icon:'🚫', bg:'#fff5f5', border:'#fed7d7', color:'#9b2c2c' },
+                  UUID_ABSENT:         { icon:'⚠️', bg:'#fffaf0', border:'#fbd38d', color:'#c05621' },
+                  UUID_DAMAGED:        { icon:'🔓', bg:'#fffaf0', border:'#fbd38d', color:'#92400e' },
+                  UUID_MISMATCH:       { icon:'🚨', bg:'#fff5f5', border:'#fed7d7', color:'#9b2c2c' },
+                  UUID_VERIFIED:       { icon:'🔐', bg:'#f0fff4', border:'#9ae6b4', color:'#22543d' },
+                  EXACT_MATCH:         { icon:'✅', bg:'#f0fff4', border:'#9ae6b4', color:'#22543d' },
+                  NO_MODIFICATIONS:    { icon:'✅', bg:'#f0fff4', border:'#9ae6b4', color:'#22543d' },
+                  ASSET_CONFIRMED:     { icon:'✅', bg:'#ebf8ff', border:'#90cdf4', color:'#2c5282' },
+                  LINKAGE_WEAKENED:    { icon:'⚠️', bg:'#fffaf0', border:'#fbd38d', color:'#92400e' },
+                  CROPPED:             { icon:'✂️', bg:'#f7fafc', border:'#e2e8f0', color:'#2d3748' },
+                  ROTATED:             { icon:'🔄', bg:'#f7fafc', border:'#e2e8f0', color:'#2d3748' },
+                  RESIZED:             { icon:'↔️', bg:'#f7fafc', border:'#e2e8f0', color:'#2d3748' },
+                  RESOLUTION_CHANGED:  { icon:'📐', bg:'#f7fafc', border:'#e2e8f0', color:'#2d3748' },
+                  WHATSAPP_FORWARDED:  { icon:'📱', bg:'#ebf8ff', border:'#bee3f8', color:'#2b6cb0' },
+                  INSTAGRAM_FORWARDED: { icon:'📸', bg:'#ebf8ff', border:'#bee3f8', color:'#2b6cb0' },
+                  SCREENSHOT:          { icon:'📷', bg:'#ebf8ff', border:'#bee3f8', color:'#2b6cb0' },
+                };
+
                 return (
                   <div className="comparison-results">
 
-                    {/* 3-tier verdict banner */}
-                    <div className={`verdict-banner ${vb.cls}`}>
-                      <div className="verdict-icon">{vb.icon}</div>
-                      <div className="verdict-text">
-                        <h3>{comparisonResult.exactMatch ? '✓ Exact Match — Byte-for-Byte Identical' : vb.label}</h3>
-                        <p>{vb.sub}</p>
-                        <p style={{margin:'4px 0 0',opacity:.85}}>{comparisonResult.visualVerdict} · Similarity: {comparisonResult.confidence}%</p>
+                    {/* Primary verdict header */}
+                    <div style={{background:cfg.bg,border:`2px solid ${cfg.border}`,borderRadius:14,padding:'18px 22px',marginBottom:14,display:'flex',alignItems:'center',gap:16}}>
+                      <div style={{fontSize:38,lineHeight:1}}>{cfg.icon}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.8px',color:cfg.color,opacity:.7,marginBottom:2}}>Comparison Verdict</div>
+                        <div style={{fontSize:19,fontWeight:800,color:cfg.color}}>{cfg.headline}</div>
+                        <div style={{fontSize:12,color:cfg.color,opacity:.75,marginTop:3}}>
+                          {reportMode==='MISMATCH' && 'The submitted image does not correspond to the selected registered asset.'}
+                          {reportMode==='EXACT_MATCH' && 'The submitted image is a confirmed match to the registered original.'}
+                          {reportMode==='PLATFORM_PROCESSED' && `Asset continuity confirmed. Platform processing ${platResult?.confidence>=0.85?'highly likely':platResult?.confidence>=0.65?'likely':'possible'} (${Math.round((platResult?.confidence||0)*100)}% confidence).`}
+                          {reportMode==='UUID_DAMAGE' && 'Asset match confirmed — ownership signature could not be fully recovered.'}
+                          {(reportMode==='SINGLE_CHANGE'||reportMode==='MULTI_CHANGE') && 'Original asset confirmed — modifications detected after registration.'}
+                        </div>
                       </div>
-                      <div className="verdict-score">{comparisonResult.confidence}%</div>
+                      <div style={{textAlign:'center',flexShrink:0}}>
+                        <div style={{fontSize:40,fontWeight:900,color:cfg.color,lineHeight:1}}>{confidence}%</div>
+                        <div style={{fontSize:10,color:cfg.color,opacity:.6,marginTop:1,textTransform:'uppercase',letterSpacing:'.5px'}}>Match Score</div>
+                      </div>
                     </div>
 
-                    {/* UUID strip */}
-                    {comparisonResult.uuidCheck && (() => {
-                      const { found, matchesOwner, userId, deviceName, gps, originalResolution, rotationDetected } = comparisonResult.uuidCheck;
-                      const uColor = found && matchesOwner!==false ? '#276749' : '#c53030';
-                      const uBg    = found && matchesOwner!==false ? '#f0fff4' : '#fff5f5';
-                      const uBorder = found && matchesOwner!==false ? '#9ae6b4' : '#feb2b2';
-                      return (
-                        <div style={{display:'flex',alignItems:'flex-start',gap:12,padding:'12px 16px',borderRadius:8,marginBottom:12,background:uBg,border:`1px solid ${uBorder}`}}>
-                          <div style={{fontSize:22}}>{found?(matchesOwner===false?'⚠️':'🔐'):'⚠️'}</div>
-                          <div style={{flex:1}}>
-                            <div style={{fontWeight:600,fontSize:13,color:uColor}}>
-                              {found
-                                ? matchesOwner===true  ? 'UUID Verified — Ownership Confirmed'
-                                : matchesOwner===false ? 'UUID Found — Different Owner Detected'
-                                : 'UUID Detected — Ownership Unverified'
-                                : 'No UUID Found — No PINIT Signature'}
-                            </div>
-                            {found && (
-                              <div style={{fontSize:12,color:'#4a5568',marginTop:4,lineHeight:1.6}}>
-                                User: <code style={{fontFamily:'monospace',fontSize:11}}>{userId?.slice(0,20)}…</code>
-                                {deviceName && <> · Device: {deviceName}</>}
-                                {gps?.available && <> · GPS: <a href={gps.mapsUrl} target="_blank" rel="noreferrer" style={{color:'#3182ce'}}>{gps.coordinates}</a></>}
-                                {originalResolution && <> · Embedded res: {originalResolution}</>}
-                                {rotationDetected > 0 && <> · Recovered after {rotationDetected}° rotation</>}
+                    {/* Key findings — the ONLY user-facing content */}
+                    <div style={{marginBottom:14}}>
+                      <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:'.6px',color:'#718096',marginBottom:8}}>Key Findings</div>
+                      <div style={{display:'flex',flexDirection:'column',gap:7}}>
+                        {(visibleFindings||[]).map((f,i) => {
+                          const fc = FINDING_CFG[f.type] || {icon:'🔍',bg:'#f7fafc',border:'#e2e8f0',color:'#2d3748'};
+                          return (
+                            <div key={i} style={{background:fc.bg,border:`1px solid ${fc.border}`,borderRadius:10,padding:'11px 15px',display:'flex',gap:11,alignItems:'flex-start'}}>
+                              <span style={{fontSize:17,lineHeight:1.5,flexShrink:0}}>{fc.icon}</span>
+                              <div>
+                                <div style={{fontWeight:700,fontSize:13,color:fc.color}}>{f.title}</div>
+                                <div style={{fontSize:12,color:'#4a5568',marginTop:3,lineHeight:1.55}}>{f.summary}</div>
                               </div>
-                            )}
-                          </div>
-                          <div>{found && matchesOwner===true ? <UserCheck size={20} color="#38a169"/> : found && matchesOwner===false ? <UserX size={20} color="#e53e3e"/> : <Key size={20} color="#718096"/>}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Transformation detail strip (same-asset only, excludes MISMATCH/EXACT_MATCH) */}
+                    {reportMode !== 'MISMATCH' && reportMode !== 'EXACT_MATCH' && transformations && (() => {
+                      const detected = Object.entries(transformations).filter(([,t]) => t?.detected && (t.confidence??0) >= 65);
+                      if (!detected.length) return null;
+                      const T_ICON = {cropped:'✂️',rotated:'🔄',resized:'↔️',screenshot:'📷',uuidDamaged:'🔓'};
+                      return (
+                        <div style={{background:'#f7fafc',border:'1px solid #e2e8f0',borderRadius:10,padding:'12px 16px',marginBottom:14}}>
+                          <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:'.6px',color:'#718096',marginBottom:8}}>Transformation Summary</div>
+                          {detected.map(([key,t]) => (
+                            <div key={key} style={{fontSize:12,color:'#4a5568',marginBottom:5,display:'flex',alignItems:'flex-start',gap:8}}>
+                              <span style={{fontSize:14,flexShrink:0}}>{T_ICON[key]||'🔍'}</span>
+                              <span>
+                                {key==='cropped'            && <><strong>Crop:</strong> {t.originalDimensions||'N/A'} → {t.submittedDimensions}{t.retainedAreaPercent!=null?` (~${t.retainedAreaPercent}% retained)`:''}</>}
+                                {key==='rotated'            && <><strong>Rotation:</strong> {t.angle}° detected</>}
+                                {key==='resized'            && <><strong>Resize:</strong> {t.originalDimensions} → {t.submittedDimensions} (×{t.scaleX})</>}
+                                {key==='screenshot'         && <><strong>Screenshot:</strong> {t.indicators?.length||0} screen-recapture indicator{t.indicators?.length!==1?'s':''}</>}
+                                {key==='uuidDamaged'        && <><strong>UUID:</strong> {t.likelyCause}</>}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                       );
                     })()}
 
-                    {/* pHash legacy note */}
-                    {comparisonResult.pHashNote && (
-                      <div style={{background:'#ebf8ff',border:'1px solid #bee3f8',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#2c5282'}}>
-                        ℹ {comparisonResult.pHashNote}
+                    {/* Platform + UUID 3-layer summary cards (PLATFORM_PROCESSED only) */}
+                    {reportMode === 'PLATFORM_PROCESSED' && platResult && (
+                      <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
+                        <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:'.6px',color:'#718096',marginBottom:2}}>3-Layer Analysis</div>
+                        {/* Layer 1: Asset */}
+                        <div style={{background:'#f0fff4',border:'1px solid #9ae6b4',borderRadius:9,padding:'10px 14px',display:'flex',gap:10,alignItems:'center'}}>
+                          <span style={{fontSize:16}}>✅</span>
+                          <div>
+                            <div style={{fontWeight:700,fontSize:12,color:'#22543d'}}>Asset Relationship: Same asset confirmed</div>
+                          </div>
+                        </div>
+                        {/* Layer 2: Platform */}
+                        <div style={{background:'#e9d8fd',border:'1px solid #d6bcfa',borderRadius:9,padding:'10px 14px',display:'flex',gap:10,alignItems:'center'}}>
+                          <span style={{fontSize:16}}>{PLAT_ICON[platResult.primary]||'📤'}</span>
+                          <div style={{flex:1}}>
+                            <div style={{fontWeight:700,fontSize:12,color:'#553c9a'}}>
+                              Platform Assessment: {{WHATSAPP_LIKELY:'WhatsApp processing likely',INSTAGRAM_LIKELY:'Instagram processing likely',SCREENSHOT_LIKELY:'Screen recapture likely',GENERIC_RECOMPRESSED:'Generic recompression',NONE:'No platform signal'}[platResult.primary]||'Platform processing'}
+                              {' '}({Math.round((platResult.confidence||0)*100)}%)
+                            </div>
+                            {platResult.reasons?.length > 0 && <div style={{fontSize:11,color:'#6b46c1',marginTop:2}}>{platResult.reasons[0]}</div>}
+                          </div>
+                        </div>
+                        {/* Layer 3: UUID */}
+                        <div style={{
+                          background: uuidSt?.state==='VERIFIED'?'#f0fff4':uuidSt?.state==='INVALID_OWNER'?'#fff5f5':'#fffaf0',
+                          border: `1px solid ${uuidSt?.state==='VERIFIED'?'#9ae6b4':uuidSt?.state==='INVALID_OWNER'?'#fed7d7':'#fbd38d'}`,
+                          borderRadius:9,padding:'10px 14px',display:'flex',gap:10,alignItems:'center'}}>
+                          <span style={{fontSize:16}}>{uuidSt?.state==='VERIFIED'?'🔐':uuidSt?.state==='INVALID_OWNER'?'🚨':uuidSt?.state==='DAMAGED'?'🔓':'⚠️'}</span>
+                          <div>
+                            <div style={{fontWeight:700,fontSize:12,color:uuidSt?.state==='VERIFIED'?'#22543d':uuidSt?.state==='INVALID_OWNER'?'#9b2c2c':'#92400e'}}>
+                              Ownership Signature: {{VERIFIED:'Verified — matches registered owner',PARTIAL:'Partially recovered',DAMAGED:'Damaged by platform processing',NOT_FOUND:'Not found',INVALID_OWNER:'Invalid — different owner'}[uuidSt?.state]||'Unknown'}
+                            </div>
+                            {uuidSt?.likelyFailureReason && <div style={{fontSize:11,color:'#744210',marginTop:2}}>{uuidSt.likelyFailureReason}</div>}
+                          </div>
+                        </div>
                       </div>
                     )}
 
-                    {/* Actions moved to bottom of results */}
-                    <div className="sim-bar-wrap">
-                      <div className="sim-bar-track">
-                        <div className={`sim-bar-fill ${comparisonResult.confidence>=80?'high':comparisonResult.confidence>=50?'mid':'low'}`}
-                          style={{width:`${comparisonResult.confidence}%`}}/>
+                    {/* pHash legacy note */}
+                    {pHashNote && (
+                      <div style={{background:'#ebf8ff',border:'1px solid #bee3f8',borderRadius:8,padding:'9px 13px',marginBottom:12,fontSize:12,color:'#2c5282'}}>
+                        ℹ️ {pHashNote}
                       </div>
-                      <span className="sim-bar-label">Overall Similarity Score</span>
-                    </div>
+                    )}
 
-                    {/* Forensic meta strip */}
-                    <div className="forensic-meta-strip">
-                      <div className="forensic-meta-item">
-                        <Clock size={14} className="fmi-icon original"/>
-                        <div><div className="fmi-label">Original Capture Time</div>
-                          <div className="fmi-value">{comparisonResult.originalCaptureTime?formatTS(comparisonResult.originalCaptureTime):'Not recorded'}</div></div>
-                      </div>
-                      <div className="forensic-meta-item">
-                        <Clock size={14} className="fmi-icon modified"/>
-                        <div><div className="fmi-label">File Last Modified</div>
-                          <div className="fmi-value">{comparisonResult.modifiedFileTime?formatTS(comparisonResult.modifiedFileTime):<span className="fmi-na">—</span>}</div></div>
-                      </div>
-                      <div className="forensic-meta-item">
-                        <Wrench size={14} className="fmi-icon tool"/>
-                        <div><div className="fmi-label">Editing Tool</div>
-                          <div className="fmi-value">{comparisonResult.editingTool?<span className="tool-tag">{comparisonResult.editingTool}</span>:<span className="fmi-na">Not detected</span>}</div></div>
-                      </div>
-                      <div className="forensic-meta-item">
-                        <Fingerprint size={14} className="fmi-icon pixel"/>
-                        <div><div className="fmi-label">pHash ({comparisonResult.pHashAlgorithm||'—'})</div>
-                          <div className="fmi-value">{comparisonResult.pHashSim!==null?`${comparisonResult.pHashSim}% similarity`:'No stored fingerprint'}</div></div>
-                      </div>
-                    </div>
-
-                    {/* Changes + heatmap */}
-                    <div className="changes-section">
-                      <div style={{display:'flex',gap:20,alignItems:'flex-start'}}>
-                        <div style={{flex:1}}>
-                          <h4>Complete Change Analysis — All 6 Signals Combined</h4>
-                          {comparisonResult.changes.length===0
-                            ? <div className="no-changes"><CheckCircle size={16}/> No modifications detected — image matches vault original.</div>
-                            : <ul className="changes-list">
-                                {comparisonResult.changes.map((c,i) => (
-                                  <li key={i} className={`change-item ${c.type}`}>
-                                    <span className="change-dot"/>
-                                    <div>
-                                      {c.category && <span className="change-category">{c.category}</span>}
-                                      <span className="change-text">{c.text}</span>
-                                    </div>
-                                  </li>
-                                ))}
-                              </ul>}
+                    {/* Technical signals — hidden in collapsible debug panel */}
+                    <details style={{marginBottom:14}}>
+                      <summary style={{cursor:'pointer',fontSize:11,fontWeight:600,color:'#a0aec0',padding:'8px 12px',background:'#f7fafc',borderRadius:8,border:'1px solid #e2e8f0',listStyle:'none',display:'flex',alignItems:'center',gap:6}}>
+                        <Cpu size={12}/> Technical Signals (Developer Debug)
+                      </summary>
+                      <div style={{background:'#f7fafc',border:'1px solid #e2e8f0',borderTop:'none',borderRadius:'0 0 8px 8px',padding:'12px 16px'}}>
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,fontSize:11,color:'#4a5568'}}>
+                          <span>pHash raw: <strong>{pHashSim!==null?`${pHashSim}%`:'—'}</strong></span>
+                          <span>pHash calibrated: <strong>{pHashCalibrated!==null?`${pHashCalibrated}%`:'—'}</strong></span>
+                          <span>Histogram: <strong>{histSim!==null?`${histSim}%`:'—'}</strong></span>
+                          <span>Algorithm: <strong>{pHashAlgorithm||'—'}</strong></span>
+                          <span>Verdict: <strong>{verdict}</strong></span>
+                          <span>Report mode: <strong>{reportMode}</strong></span>
+                          {platResult && <span>Platform: <strong>{platResult.primary} ({Math.round((platResult.confidence||0)*100)}%)</strong></span>}
+                          {uuidSt && <span>UUID state: <strong>{uuidSt.state}</strong></span>}
+                          {editingTool && <span style={{gridColumn:'1/-1'}}>Editing tool: <strong>{editingTool}</strong></span>}
                         </div>
-                        {comparisonResult.pixelAnalysis?.hotRegions?.length > 0 && (
-                          <div style={{flexShrink:0}}>
-                            <h4 style={{marginBottom:8,fontSize:13}}>Change Heatmap</h4>
-                            <RegionHeatmap hotRegions={comparisonResult.pixelAnalysis.hotRegions}/>
-                            <div style={{fontSize:10,color:'#a0aec0',marginTop:4}}>vs thumbnail (not full-res)</div>
-                          </div>
-                        )}
                       </div>
-                    </div>
+                    </details>
 
-                    {/* Data comparison grid */}
-                    <div className="data-compare-grid">
-                      <div className="data-col">
-                        <div className="data-col-head original">Original Asset</div>
-                        <div className="data-row"><span>Registered</span><span className="ts-value-cell">{formatTS(compareAsset.dateEncrypted||compareAsset.timestamp)}</span></div>
-                        <div className="data-row"><span>Capture Time</span><span className="ts-value-cell">{comparisonResult.originalCaptureTime?formatTS(comparisonResult.originalCaptureTime):'—'}</span></div>
-                        <div className="data-row"><span>Owner</span><span>{compareAsset.ownerName||compareAsset.userId||'—'}</span></div>
-                        <div className="data-row"><span>Resolution</span><span>{compareAsset.resolution||compareAsset.assetResolution||'—'}</span></div>
-                        <div className="data-row"><span>pHash Format</span><span style={{fontSize:11}}>{(compareAsset.visualFingerprint||compareAsset.visual_fingerprint)?((compareAsset.visualFingerprint||compareAsset.visual_fingerprint).length===64?'256-bit (new)':'64-bit (legacy)'):'Not stored'}</span></div>
-                        <div className="data-row"><span>SHA-256</span><span className="mono-small">{(compareAsset.fileHash||compareAsset.file_hash)?(compareAsset.fileHash||compareAsset.file_hash).substring(0,20)+'…':'—'}</span></div>
-                        {(compareAsset.certificateId||compareAsset.certificate_id) && <div className="data-row verified-row"><CheckCircle size={12}/> Certificate Verified</div>}
-                      </div>
-                      <div className="data-col">
-                        <div className="data-col-head modified">Submitted Image</div>
-                        {comparisonResult.modifiedFileTime && <div className="data-row"><span>Last Modified</span><span className="ts-value-cell">{formatTS(comparisonResult.modifiedFileTime)}</span></div>}
-                        <div className="data-row"><span>Compared At</span><span className="ts-value-cell">{formatTS(comparisonResult.timestamp)}</span></div>
-                        <div className="data-row"><span>Editing Tool</span><span>{comparisonResult.editingTool||<span className="fmi-na">Not detected</span>}</span></div>
-                        <div className="data-row"><span>Verdict</span><span style={{fontWeight:700,color:comparisonResult.isTampered?'#c53030':comparisonResult.isModified?'#c05621':'#276749'}}>{comparisonResult.verdict3tier}</span></div>
-                        <div className="data-row"><span>Resolution</span><span>{comparisonResult.uploadedResolution}</span></div>
-                        <div className="data-row"><span>File Size</span><span>{comparisonResult.uploadedSize}</span></div>
-                        {comparisonResult.pixelAnalysis && <div className="data-row"><span>Pixels Changed (vs thumb)</span><span>{comparisonResult.pixelAnalysis.changedPct}%</span></div>}
-                        <div className="data-row"><span>pHash Similarity</span><span>{comparisonResult.pHashSim!==null?`${comparisonResult.pHashSim}%`:'—'}</span></div>
-                        <div className="data-row"><span>Histogram</span><span>{comparisonResult.histSim!==null?`${comparisonResult.histSim}%`:'—'}</span></div>
-                      </div>
-                    </div>
-
-                    {/* Actions — at the very bottom of results */}
+                    {/* Actions */}
                     <div className="report-actions">
                       <button className={`btn-action copy-link ${linkCopied?'copied':''}`} onClick={handleCopyLink}>
                         <Link size={16}/>
                         {linkCopied ? '✓ Link Copied!' : 'Copy Verification Link'}
                       </button>
                       <button className="btn-action download-report" onClick={handleDownload}>
-                        <Download size={16}/> Download HTML Report
+                        <Download size={16}/> Download Report
                       </button>
                     </div>
                   </div>
                 );
               })()}
+
             </div>
           </div>
         </div>
