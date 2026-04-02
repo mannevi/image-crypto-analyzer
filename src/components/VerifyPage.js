@@ -3,8 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { Upload, CheckCircle, XCircle, Image as ImageIcon, Search, Eye } from 'lucide-react';
 import './VerifyPage.css';
 
-// ── pHash — 64-char 256-bit DCT (same algorithm as AssetTrackingPage) ─────────
-// Used only when SHA-256 and UUID checks both fail, to find visually similar assets.
 const computePHashFromCanvas = (canvas) => {
   try {
     const SIZE = 32;
@@ -67,7 +65,7 @@ function VerifyPage() {
   const PAYLOAD_BYTES  = 1 + UUID_FIELD_LEN + 2;
   const PAYLOAD_BITS   = PAYLOAD_BYTES * 8;
 
-  // Also try 36-char field for newer embeds
+  // Try 36-char field for newer embeds
   const UUID_FIELD_LEN_36 = 36;
   const PAYLOAD_BYTES_36  = 1 + UUID_FIELD_LEN_36 + 2;
   const PAYLOAD_BITS_36   = PAYLOAD_BYTES_36 * 8;
@@ -178,9 +176,6 @@ function VerifyPage() {
     return null;
   };
 
-  // Rotate a canvas by 90/180/270 degrees
-  // imageSmoothingEnabled = false is critical — smoothing changes pixel values
-  // during redraw which scrambles the LSBs where the UUID is stored
   const rotateCanvasUtil = (src, degrees) => {
     const c = document.createElement('canvas');
     const swap = degrees === 90 || degrees === 270;
@@ -194,8 +189,6 @@ function VerifyPage() {
     return c;
   };
 
-  // Try UUID extraction at 0°, 90°, 180°, 270° — handles physically rotated images
-  // Previous version was named "WithRotation" but never actually rotated — fixed here
   const extractUUIDWithRotation = (sourceCanvas) => {
     for (const deg of [0, 90, 180, 270]) {
       const canvas    = deg === 0 ? sourceCanvas : rotateCanvasUtil(sourceCanvas, deg);
@@ -381,8 +374,7 @@ function VerifyPage() {
       setCurrentStep(5);
 
       // ── STEP 3: Visual similarity search (only when both UUID and hash checks fail) ──
-      // Computes pHash of the uploaded image and searches all vault fingerprints.
-      // This is a NEW addition — existing match logic above is completely untouched.
+  
       let visualMatches    = [];
       let visualSearchDone = false;
 
