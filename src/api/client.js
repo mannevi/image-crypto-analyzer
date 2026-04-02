@@ -42,6 +42,7 @@ export const vaultAPI = {
   verifyByHash: (hash)              => request('GET',    `/vault/verify/${hash}`, null, false),
   search      : (q)                 => request('GET',    `/vault/search/query?q=${encodeURIComponent(q)}`),
   visualSearch: (phash, threshold)  => request('POST',   '/vault/search/visual', { phash, threshold: threshold || 30 }),
+  getByUUID   : (userId)  => request('GET',    `/vault/by-user/${encodeURIComponent(userId)}`),
 };
 
 // ─── Certificates ─────────────────────────────────────────────────────────────

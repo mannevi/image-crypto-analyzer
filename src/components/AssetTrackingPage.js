@@ -2477,7 +2477,7 @@ function AssetTrackingPage() {
                       </div>
                     </div>
 
-                    {/* Transformation detail strip (same-asset only, excludes MISMATCH/EXACT_MATCH) */}
+                    {/* Transformation-- detail strip (same-asset only, excludes MISMATCH/EXACT_MATCH) */}
                     {reportMode !== 'MISMATCH' && reportMode !== 'EXACT_MATCH' && transformations && (() => {
                       const detected = Object.entries(transformations).filter(([,t]) => t?.detected && (t.confidence??0) >= 65);
                       if (!detected.length) return null;
