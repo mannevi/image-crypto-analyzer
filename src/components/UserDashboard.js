@@ -170,12 +170,9 @@ function UserDashboard({ user, onLogout }) {
 
   const handleDelete = async (imageId) => {
     if (!window.confirm('Delete this image from vault?')) return;
-    // Add to blacklist immediately so refresh never shows it again
     purgeDeletedId(imageId);
-    // Remove from React state immediately
     setVaultImages(prev => prev.filter(img => img.id !== imageId && img.assetId !== imageId));
     setSelectedVaultItems(prev => prev.filter(id => id !== imageId));
-    // Delete from backend (non-blocking — blacklist already prevents reappearance)
     try {
       await vaultAPI.delete(imageId);
     } catch (err) {
@@ -204,7 +201,6 @@ function UserDashboard({ user, onLogout }) {
   const handleDeleteSelected = async () => {
     if (selectedVaultItems.length === 0) { alert('No items selected'); return; }
     if (!window.confirm(`Delete ${selectedVaultItems.length} selected image(s) from vault?`)) return;
-    // Blacklist + localStorage purge immediately for all selected
     selectedVaultItems.forEach(id => purgeDeletedId(id));
     // Remove from React state immediately
     setVaultImages(prev => prev.filter(img =>
@@ -256,7 +252,6 @@ function UserDashboard({ user, onLogout }) {
       owner:      cert.owner_name || cert.ownerName || null,
     };
 
-    // Encode only essential data (much shorter URL!)
     const encodedData = btoa(JSON.stringify(essentialData));
 
     // Use deployed URL (not localhost!)
