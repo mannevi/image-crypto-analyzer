@@ -314,7 +314,7 @@ function Login({ onLogin }) {
           publicKey: {
             challenge: crypto.getRandomValues(new Uint8Array(32)),
             rp: {
-              name: 'Image Forensics App',
+              name: 'PINIT CORE',
               id  : window.location.hostname
             },
             user: {
@@ -462,8 +462,8 @@ function Login({ onLogin }) {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1>Image Forensics App</h1>
-          <p>Analyze and detect image manipulations</p>
+          <h1>PINIT</h1>
+          <p>Mark it. Prove it. Own it.</p>
         </div>
 
         <div className="tabs">

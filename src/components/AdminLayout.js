@@ -51,7 +51,7 @@ function AdminLayout({ user, onLogout, children }) {
       {/* Top Nav */}
       <div className="admin-nav">
         <div className="nav-brand">
-          <h2>🔍 Image Forensics App - Admin</h2>
+          <h2>🔍 PINIT CORE - Admin</h2>
         </div>
         <div className="nav-user">
           <span>Admin: {user?.username || user?.name || 'Admin'}</span>

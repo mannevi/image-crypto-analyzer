@@ -300,7 +300,7 @@ const handleShareCert = async (cert) => {
   return (
     <div className="user-dashboard">
       <div className="dashboard-nav">
-        <div className="nav-brand"><h2>🔍 Image Forensics App</h2></div>
+        <div className="nav-brand"><h2>🔍 PINIT CORE - User </h2></div>
         <div className="nav-user">
           <span>Welcome, {displayName}</span>
           <button onClick={handleLogout} className="btn-logout">
@@ -797,11 +797,11 @@ const handleShareCert = async (cert) => {
           {/* ── ANALYZE ── */}
           {activeTab === 'analyze' && (
             <div className="analyze-section">
-              <h1>Image Forensics Analysis</h1>
-              <p className="subtitle">Upload an image to detect manipulations and verify authenticity</p>
+              <h1>PINIT Analyzer</h1>
+              <p className="subtitle">Encrypt. Analyze. Verify. </p>
               <div className="launch-card">
                 <div className="launch-icon"><Camera size={80} /></div>
-                <h2>Launch Image Analyzer</h2>
+                <h2>Capture and PINIT</h2>
                 <p>Full encryption and analysis with UUID embedding, GPS tracking, device fingerprinting, and AI classification.</p>
                 <button onClick={() => navigate('/analyzer')} className="btn-launch">
                   <FileSearch size={20} style={{ marginRight: 8 }} /> Open Image Analyzer

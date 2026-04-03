@@ -297,7 +297,7 @@ function AdminDashboard({ user, onLogout }) {
   </div>
 
   <footer>
-    PINIT Image Forensics System &nbsp;·&nbsp; ${new Date().toLocaleString()}
+    PINIT Image CORE System &nbsp;·&nbsp; ${new Date().toLocaleString()}
   </footer>
 </body>
 </html>`;
@@ -316,7 +316,7 @@ function AdminDashboard({ user, onLogout }) {
       {currentTab === 'overview' && (
         <div className="overview-section">
           <div className="section-header">
-            <div><h1>Dashboard Overview</h1><p className="subtitle">Image Forensics System Metrics</p></div>
+            <div><h1>Dashboard Overview</h1><p className="subtitle">PINIT System Metrics</p></div>
             <button onClick={loadAll} className="btn-refresh"><RefreshCw size={16} /> Refresh</button>
           </div>
 
@@ -335,7 +335,7 @@ function AdminDashboard({ user, onLogout }) {
                 <h2>Quick Actions</h2>
                 <div className="stats-grid">
                   {[
-                    { icon: <Camera size={32} />,      title: 'Launch Image Analyzer', desc: 'Access encryption & analysis tools', action: () => navigate('/analyzer') },
+                    { icon: <Camera size={32} />,      title: 'Capture and PINIT', desc: 'Access encryption & analysis tools', action: () => navigate('/analyzer') },
                     { icon: <FolderOpen size={32} />,  title: 'View Assets',           desc: 'Browse all encrypted assets',       action: () => goTab('assets') },
                     { icon: <Shield size={32} />,      title: 'Track Assets',          desc: 'Monitor modifications & versions',  action: () => navigate('/admin/assets') },
                     { icon: <CheckCircle size={32} />, title: 'Verify Image',          desc: 'Check image authenticity',          action: () => navigate('/admin/verify') },
