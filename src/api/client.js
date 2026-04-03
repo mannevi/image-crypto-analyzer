@@ -46,10 +46,12 @@ export const vaultAPI = {
 };
 
 // ─── Certificates ─────────────────────────────────────────────────────────────
+
 export const certAPI = {
   save   : (data) => request('POST',   '/certificates/save', data),
   list   : ()     => request('GET',    '/certificates/list'),
   delete : (id)   => request('DELETE', `/certificates/${id}`),
+  share  : (data) => request('POST',   '/certificates/share', data),
 };
 
 // ─── Comparison ───────────────────────────────────────────────────────────────

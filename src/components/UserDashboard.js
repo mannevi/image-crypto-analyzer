@@ -237,48 +237,44 @@ function UserDashboard({ user, onLogout }) {
     });
   };
 
-  const handleShareCert = (cert) => {
-    // Create data matching what PublicVerifyPage expects
-    const essentialData = {
-      v:          1,
-      assetId:    cert.asset_id || cert.assetId,
-      certId:     cert.certificate_id,
-      confidence: cert.confidence,
-      status:     cert.status,
-      isTampered: false,
-      visualVerdict: cert.status || 'Verified',
-      changes:    [],
-      comparedAt: cert.created_at,
-      owner:      cert.owner_name || cert.ownerName || null,
-    };
+const handleShareCert = async (cert) => {
+  const baseUrl = window.location.origin.includes('localhost')
+    ? 'https://image-crypto-analyzer.vercel.app'
+    : window.location.origin;
 
-    const encodedData = btoa(JSON.stringify(essentialData));
+  const certificateUrl = `${baseUrl}/public/certificate/${cert.certificate_id}`;
 
-    // Use deployed URL (not localhost!)
-    const baseUrl = window.location.origin.includes('localhost')
-      ? 'https://image-crypto-analyzer.vercel.app'
-      : window.location.origin;
-
-    const verifyUrl = `${baseUrl}/public/verify?data=${encodedData}`;
-
-    const text = `PINIT Ownership Certificate\n\nCertificate ID: ${cert.certificate_id}\nAsset ID: ${cert.asset_id}\nConfidence: ${cert.confidence}%\nStatus: ${cert.status}\n\n🔐 This image is protected with PINIT invisible watermarking.\nEven after compression or sharing, ownership data is embedded in the image pixels.\n\nVerify at: ${verifyUrl}`;
-
-    if (navigator.share) {
-      navigator.share({
-        title: 'PINIT Ownership Certificate',
-        text: text,
-        url: verifyUrl
-      }).then(() => {
-        setTimeout(() => {
-          alert(`✅ Shared successfully!\n\n📱 Link works on ANY device!\n🔗 Short link length: ${verifyUrl.length} characters\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality\n• Filters or crops < 25px may damage watermark`);
-        }, 500);
-      }).catch(() => {});
-    } else {
-      navigator.clipboard.writeText(verifyUrl).then(() => {
-        alert(`✅ Verification link copied!\n\n📱 Works on any device: mobile, tablet, laptop!\n🔗 Link length: ${verifyUrl.length} characters\n\n${verifyUrl}\n\n🔐 Watermark Status:\n• PNG format: 100% preserved\n• WhatsApp/Email: 85%+ quality`);
-      });
+  try {
+    const { certAPI } = await import('../api/client');
+    await certAPI.share({
+      certificateId      : cert.certificate_id,
+      assetId            : cert.asset_id || cert.assetId,
+      confidence         : cert.confidence,
+      status             : 'Verified',
+      dateCreated        : cert.created_at,
+      ownerEmail         : cert.owner_email || cert.email || null,
+      ownershipAtCreation: cert.ownership_data || {},
+      technicalDetails   : cert.technical_details || {},
+      imagePreview       : cert.image_preview || cert.thumbnail_url || cert.cloudinary_url || null,
+    });
+  } catch (err) {
+    if (!err.message?.includes('Already shared')) {
+      console.warn('Share to backend failed:', err.message);
     }
-  };
+  }
+
+  if (navigator.share) {
+    navigator.share({
+      title: 'PINIT Ownership Certificate',
+      text : `View ownership certificate: ${cert.certificate_id}`,
+      url  : certificateUrl,
+    }).catch(() => {});
+  } else {
+    navigator.clipboard.writeText(certificateUrl).then(() => {
+      alert(`✅ Certificate link copied!\n\n${certificateUrl}`);
+    });
+  }
+};
 
   const handleChangePassword = async () => {
     const newPwd = window.prompt('Enter new password (min 6 characters):');
