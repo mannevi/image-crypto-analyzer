@@ -413,29 +413,6 @@
 }
 .res-crop-badge--rotation { background: rgba(59,130,246,.08); border-color: rgba(59,130,246,.25); color: #60a5fa; }
 
-/* ── Small image warning ─────────────────────────────────────────────────── */
-.res-small-warn {
-  margin-top: 10px; padding: 8px 12px; border-radius: 8px;
-  font-size: 11.5px; line-height: 1.5;
-  background: rgba(245,158,11,.06); border: 1px solid rgba(245,158,11,.2);
-  color: #fbbf24;
-}
-
-/* ── Modification banners — rotation / crop ──────────────────────────────── */
-.res-modification-banner {
-  display: flex; align-items: flex-start; gap: 12px;
-  margin-top: 12px; padding: 12px 14px; border-radius: 10px; border-left: 4px solid;
-}
-.res-modification-banner--rotation { background: rgba(59,130,246,.07); border-left-color: #3b82f6; }
-.res-modification-banner--crop     { background: rgba(245,158,11,.07);  border-left-color: #f59e0b; }
-.res-modification-banner__icon { font-size: 22px; flex-shrink: 0; margin-top: 1px; }
-.res-modification-banner__body { display: flex; flex-direction: column; gap: 2px; }
-.res-modification-banner__title { font-size: 13px; font-weight: 700; margin: 0; }
-.res-modification-banner--rotation .res-modification-banner__title { color: #60a5fa; }
-.res-modification-banner--crop    .res-modification-banner__title { color: #fbbf24; }
-.res-modification-banner__sub  { font-size: 12px; color: var(--text-2, #7a8099); margin: 0; }
-.res-modification-banner__note { font-size: 11px; color: var(--text-3, #4a5068); margin: 0; font-style: italic; }
-
 .res-integrity {
   margin-top: 12px; padding: 10px 12px; border-radius: 8px;
   font-size: 13px; font-weight: 600;
@@ -948,3 +925,308 @@
 .cert-conf-badge--high { background: rgba(34,197,94,.12);  color: #4ade80; }
 .cert-conf-badge--med  { background: rgba(245,158,11,.12);  color: #fbbf24; }
 .cert-conf-badge--low  { background: rgba(239,68,68,.12);   color: #f87171; }
+/* ══════════════════════════════════════════════════════════════════════════════
+   ENHANCED CAMERA — full-screen phone-camera-like UI
+   All new classes prefixed camera-fs__ / cam-  to avoid any conflicts
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Full-screen camera overlay ─────────────────────────────────────────────── */
+.camera-fs {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  /* prevent accidental scroll/tap bubbling */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.camera-fs__feed {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* ── Grid overlay (rule of thirds) ─────────────────────────────────────────── */
+.camera-fs__grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  /* two vertical + two horizontal lines */
+  background-image:
+    linear-gradient(to right,  rgba(255,255,255,.25) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,.25) 1px, transparent 1px);
+  background-size: 33.33% 33.33%;
+}
+
+/* ── Tap-to-focus ring ───────────────────────────────────────────────────────── */
+.camera-fs__focus-ring {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  border: 2px solid #f59e0b;
+  border-radius: 4px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 10;
+  animation: focusPulse .35s ease forwards;
+}
+
+@keyframes focusPulse {
+  0%   { opacity: 1; transform: translate(-50%,-50%) scale(1.4); }
+  60%  { opacity: 1; transform: translate(-50%,-50%) scale(1.0); }
+  100% { opacity: .7; transform: translate(-50%,-50%) scale(1.0); }
+}
+
+/* ── Timer countdown overlay ────────────────────────────────────────────────── */
+.camera-fs__timer-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.35);
+  z-index: 20;
+  pointer-events: none;
+}
+
+.camera-fs__timer-count {
+  font-family: 'Syne', sans-serif;
+  font-size: 96px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 4px 24px rgba(0,0,0,.6);
+  animation: timerPop .45s cubic-bezier(.34,1.56,.64,1) both;
+}
+
+@keyframes timerPop {
+  from { transform: scale(1.6); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* ── Top bar: grid | flash | timer | close ─────────────────────────────────── */
+.camera-fs__top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 52px 14px 14px; /* top padding accounts for status bar */
+  background: linear-gradient(to bottom, rgba(0,0,0,.65) 0%, transparent 100%);
+}
+
+.cam-top-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 20px;
+  border: none;
+  background: rgba(0,0,0,.42);
+  color: rgba(255,255,255,.85);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.cam-top-btn:active           { background: rgba(255,255,255,.18); }
+.cam-top-btn--on              { background: rgba(255,255,255,.22); color: #fff; }
+.cam-top-btn--torch           { background: rgba(245,158,11,.8);   color: #000; }
+.cam-top-btn--close           { margin-left: 8px; }
+.cam-top-btn__label           { font-size: 11px; font-weight: 800; }
+
+/* ── Zoom buttons ───────────────────────────────────────────────────────────── */
+.camera-fs__zoom {
+  position: absolute;
+  bottom: 130px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0,0,0,.42);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-radius: 24px;
+  padding: 4px 8px;
+}
+
+.cam-zoom-btn {
+  min-width: 40px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 16px;
+  border: none;
+  background: transparent;
+  color: rgba(255,255,255,.7);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.cam-zoom-btn--active {
+  background: rgba(255,255,255,.2);
+  color: #fff;
+  transform: scale(1.08);
+}
+
+.cam-zoom-btn:active { opacity: .7; }
+
+/* ── Bottom bar: thumbnail | shutter | flip ─────────────────────────────────── */
+.camera-fs__bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 32px 44px; /* bottom padding for home-bar */
+  background: linear-gradient(to top, rgba(0,0,0,.72) 0%, transparent 100%);
+}
+
+/* ── Thumbnail (last capture) ────────────────────────────────────────────────── */
+.cam-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  border: 2px solid rgba(255,255,255,.4);
+  overflow: hidden;
+  background: rgba(255,255,255,.08);
+  flex-shrink: 0;
+}
+
+.cam-thumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* ── Shutter button ─────────────────────────────────────────────────────────── */
+.cam-shutter {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  border: 4px solid rgba(255,255,255,.9);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 100ms ease;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
+}
+
+.cam-shutter:active { transform: scale(.93); }
+
+.cam-shutter--counting {
+  border-color: #f59e0b;
+  animation: shutterPulse .9s ease-in-out infinite;
+}
+
+@keyframes shutterPulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(245,158,11,.5); }
+  50%     { box-shadow: 0 0 0 10px rgba(245,158,11,0); }
+}
+
+.cam-shutter__inner {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.95);
+  transition: background 100ms ease;
+}
+
+.cam-shutter:active .cam-shutter__inner { background: rgba(200,200,200,.9); }
+.cam-shutter--counting .cam-shutter__inner { background: #f59e0b; }
+
+/* ── Flip camera button ─────────────────────────────────────────────────────── */
+.cam-flip-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,.15);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
+}
+
+.cam-flip-btn:active { background: rgba(255,255,255,.28); }
+.cam-flip-btn--placeholder { background: transparent; pointer-events: none; }
+/* ── Report modifications ─────────────────────────────── */
+.res-card__section-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 10px 0 6px;
+}
+
+.res-card__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 12px 0;
+}
+
+.res-modification-block {
+  background: rgba(245,158,11,0.06);
+  border: 1px solid rgba(245,158,11,0.15);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.res-mod-type {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-bottom: 8px;
+}
+
+.res-row__val--original {
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.res-row__val--warn {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.res-row__val--good {
+  color: #4ade80;
+  font-weight: 600;
+}

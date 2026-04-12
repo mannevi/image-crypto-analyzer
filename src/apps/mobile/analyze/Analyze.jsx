@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   Camera, Upload, ChevronRight, CheckCircle, Shield,
@@ -342,12 +343,6 @@ const buildMetrics=(tv,nl,sb,ec,ur,ae,cr,ar,cc)=>({
 const classifyImage=(canvas,imageData,fileSize,fileName,hasUUID,resolutionMismatch=false,exifHints={})=>{
   const data=imageData.data; const w=canvas.width; const h=canvas.height;
   const total=w*h; const pc=data.length/4;
-
-  // ── Small image guard ──────────────────────────────────────────────────────
-  // Images under 200x200 have too few pixels for reliable heuristic metrics.
-  // All signals (noise, edge coherence, smooth blocks) are calibrated for
-  // full-resolution photos. Return a low-confidence result with a clear note.
-  const isSmall = total < 40000; // smaller than ~200x200
   const isPNG=fileName.toLowerCase().endsWith('.png');
   const isJPEG=fileName.toLowerCase().endsWith('.jpg')||fileName.toLowerCase().endsWith('.jpeg');
   const exifDevice=exifHints.exifDeviceInfo||{found:false};
@@ -380,18 +375,24 @@ const classifyImage=(canvas,imageData,fileSize,fileName,hasUUID,resolutionMismat
   const mo=[{v:'CASE_4',conf:98,evidence:'Direct',case:'Case 4: Encrypted with UUID',reasoning:['UUID encryption header verified','Resolution matches originally embedded dimensions']}];
   const m5=[{v:'CASE_5',conf:95,evidence:'Direct',case:'Case 5: Encrypted with UUID and Cropped',reasoning:['UUID encryption header verified','Current resolution does not match the originally embedded resolution','Image may have been cropped or resized after encryption']}];
   const metricsObj=buildMetrics(tv,nl,sb,ec,ur,ae,cr,ar,cc);
-
-  // ── CASE 4 & 5: UUID — always reliable regardless of image size ────────────
+  const isSmall = total < 40000; // 200×200 or smaller
   if(hasUUID){if(resolutionMismatch)return{caseCode:'CASE_5',internalLabel:'Case 5: Encrypted with UUID and Cropped',displayLabel:'Embedded UUID detected; resolution mismatch',detectedCase:'Case 5: Encrypted with UUID and Cropped',confidence:95,evidenceLevel:'Direct',reasoning:m5[0].reasoning,metrics:metricsObj};return{caseCode:'CASE_4',internalLabel:'Case 4: Encrypted with UUID',displayLabel:'Embedded UUID detected',detectedCase:'Case 4: Encrypted with UUID',confidence:98,evidenceLevel:'Direct',reasoning:mo[0].reasoning,metrics:metricsObj};}
-
-  // ── Small image: heuristics unreliable, skip classification ───────────────
-  if(isSmall){
-    return{caseCode:'CASE_3',internalLabel:'Case 3: Downloaded from Web',displayLabel:'Image too small for reliable classification',detectedCase:'Case 3: Downloaded from Web',confidence:50,evidenceLevel:'Insufficient',
-      reasoning:[
-        `Image is very small (${w}x${h} = ${total.toLocaleString()} pixels) — heuristic classification is not reliable at this size`,
-        'For accurate analysis, use an image larger than 200x200 pixels',
-        'UUID steganography still works correctly at this size if previously embedded',
-      ],metrics:metricsObj};
+  // Small image — heuristics unreliable, but UUID check above already ran
+  if (isSmall) {
+    return {
+      caseCode: 'CASE_3',
+      internalLabel: 'Case 3: Downloaded from Web',
+      displayLabel: 'Image too small for reliable analysis',
+      detectedCase: 'Case 3: Downloaded from Web',
+      confidence: 50,
+      evidenceLevel: 'Insufficient',
+      reasoning: [
+        `Image is very small (${w}×${h} = ${total.toLocaleString()} pixels)`,
+        'UUID steganography requires the full-resolution PNG — JPEG thumbnails destroy LSB data',
+        'To recover ownership details: download the original from your Vault and re-analyze',
+      ],
+      metrics: metricsObj,
+    };
   }
   const mdims=[720,1080,1440,1920,2160,3024,4032],mh=[1280,1920,2560,2880,4032],mas=[0.5625,0.75,1.0,1.333,1.777,2.0,2.165];
   const isMD=mdims.includes(w)||mh.includes(h); const isMA=mas.some(a=>Math.abs(ar-a)<0.05);
@@ -416,72 +417,49 @@ const saveFileToDevice=async(dataUrl,fileName)=>{
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
-// DRAFT UTILITIES — IndexedDB-backed (no 5 MB localStorage quota limit)
+// DRAFT UTILITIES
 // ═════════════════════════════════════════════════════════════════════════════
 
-const IDB_NAME  = 'pinit_drafts_db';
-const IDB_STORE = 'drafts';
+// ── REPLACE the old localStorage draft utils with these IndexedDB versions ──
+
+const IDB_DRAFT_NAME  = 'pinit_drafts_db';
+const IDB_DRAFT_STORE = 'drafts';
 
 const _openDraftDB = () => new Promise((resolve, reject) => {
-  const req = indexedDB.open(IDB_NAME, 1);
+  const req = indexedDB.open(IDB_DRAFT_NAME, 1);
   req.onupgradeneeded = (e) => {
     const db = e.target.result;
-    if (!db.objectStoreNames.contains(IDB_STORE))
-      db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+    if (!db.objectStoreNames.contains(IDB_DRAFT_STORE))
+      db.createObjectStore(IDB_DRAFT_STORE, { keyPath: 'id' });
   };
   req.onsuccess = () => resolve(req.result);
   req.onerror   = () => reject(req.error);
 });
 
-const idbGetAllDrafts = async () => {
+const getDrafts = async () => {
   try {
     const db  = await _openDraftDB();
-    const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).getAll();
+    const req = db.transaction(IDB_DRAFT_STORE, 'readonly').objectStore(IDB_DRAFT_STORE).getAll();
     return new Promise((res, rej) => {
-      req.onsuccess = () => res((req.result || []).sort((a, b) => (b.timestamp||0)-(a.timestamp||0)));
+      req.onsuccess = () => res((req.result || []).sort((a, b) => (b.timestamp||0) - (a.timestamp||0)));
       req.onerror   = () => rej(req.error);
     });
   } catch { return []; }
 };
 
-const idbPutDraft = async (draft) => {
+const persistDraft = async (draft) => {
   const db    = await _openDraftDB();
-  const tx    = db.transaction(IDB_STORE, 'readwrite');
-  const store = tx.objectStore(IDB_STORE);
-  return new Promise((res, rej) => {
-    const all = store.getAll();
-    all.onsuccess = () => {
-      const sorted = (all.result||[]).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
-      if (sorted.length >= 10) store.delete(sorted[sorted.length-1].id);
-      const put = store.put(draft);
-      put.onsuccess = () => res();
-      put.onerror   = () => rej(put.error);
-    };
-    all.onerror = () => rej(all.error);
-  });
+  const req   = db.transaction(IDB_DRAFT_STORE, 'readwrite').objectStore(IDB_DRAFT_STORE).put(draft);
+  return new Promise((res, rej) => { req.onsuccess = res; req.onerror = () => rej(req.error); });
 };
 
-const idbRemoveDraft = async (id) => {
+const removeDraft = async (id) => {
   try {
     const db  = await _openDraftDB();
-    const req = db.transaction(IDB_STORE,'readwrite').objectStore(IDB_STORE).delete(id);
-    return new Promise((res,rej)=>{ req.onsuccess=res; req.onerror=()=>rej(req.error); });
+    const req = db.transaction(IDB_DRAFT_STORE, 'readwrite').objectStore(IDB_DRAFT_STORE).delete(id);
+    return new Promise((res, rej) => { req.onsuccess = res; req.onerror = () => rej(req.error); });
   } catch { /* non-critical */ }
 };
-
-// Small JPEG for card display only — fileBase64 (full PNG with UUID) never compressed
-const _compressThumb = (dataUrl, maxPx=240) => new Promise((resolve) => {
-  const img = new Image();
-  img.onload = () => {
-    const s = Math.min(1, maxPx / Math.max(img.width, img.height));
-    const c = document.createElement('canvas');
-    c.width = Math.round(img.width*s); c.height = Math.round(img.height*s);
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    resolve(c.toDataURL('image/jpeg', 0.6));
-  };
-  img.onerror = () => resolve(dataUrl);
-  img.src = dataUrl;
-});
 
 const draftTimeAgo = (ts) => {
   const diff = Date.now() - ts;
@@ -496,127 +474,219 @@ const draftTimeAgo = (ts) => {
 // STEP COMPONENTS
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ─── Camera Portal — renders full-screen camera into document.body ────────────
+// This escapes ALL parent overflow/transform/z-index constraints.
+// position:fixed was broken because .analyze-content has overflow-y:auto.
+const CameraPortal = ({
+  videoRef, canvasRef,
+  gridOn, onToggleGrid,
+  torchOn, torchAvail, onToggleTorch,
+  timerSecs, onToggleTimer, timerCount,
+  zoomLevel, zoomRange, onSetZoom,
+  focusPt, onTapFocus, onTouchMove, onTouchEnd,
+  lastThumb, onCapturePhoto, onStopCamera, onSwitchCamera, canSwitch,
+}) => createPortal(
+  <div
+    className="camera-fs"
+    onClick={onTapFocus}
+    onTouchMove={onTouchMove}
+    onTouchEnd={onTouchEnd}
+  >
+    {/* video feed */}
+    <video ref={videoRef} autoPlay playsInline muted className="camera-fs__feed" />
+
+    {/* grid overlay */}
+    {gridOn && <div className="camera-fs__grid" />}
+
+    {/* tap-to-focus ring */}
+    {focusPt && (
+      <div className="camera-fs__focus-ring" style={{ left: focusPt.x, top: focusPt.y }} />
+    )}
+
+    {/* timer countdown overlay */}
+    {timerCount !== null && (
+      <div className="camera-fs__timer-overlay">
+        <span className="camera-fs__timer-count">{timerCount}</span>
+      </div>
+    )}
+
+    {/* ── top bar: grid | flash | timer | close ───────────────────────────── */}
+    <div className="camera-fs__top" onClick={e => e.stopPropagation()}>
+      <button className={`cam-top-btn ${gridOn ? 'cam-top-btn--on' : ''}`} onClick={onToggleGrid} title="Grid">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <line x1="6" y1="0" x2="6" y2="18" stroke="currentColor" strokeWidth="1.4"/>
+          <line x1="12" y1="0" x2="12" y2="18" stroke="currentColor" strokeWidth="1.4"/>
+          <line x1="0" y1="6" x2="18" y2="6" stroke="currentColor" strokeWidth="1.4"/>
+          <line x1="0" y1="12" x2="18" y2="12" stroke="currentColor" strokeWidth="1.4"/>
+        </svg>
+      </button>
+
+      {torchAvail && (
+        <button className={`cam-top-btn ${torchOn ? 'cam-top-btn--torch' : ''}`} onClick={onToggleTorch} title="Flash">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+        </button>
+      )}
+
+      <button className={`cam-top-btn ${timerSecs > 0 ? 'cam-top-btn--on' : ''}`} onClick={onToggleTimer} title="Timer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="13" r="8"/><polyline points="12 9 12 13 14.5 13"/>
+          <line x1="10" y1="3" x2="14" y2="3"/>
+        </svg>
+        {timerSecs > 0 && <span className="cam-top-btn__label">{timerSecs}s</span>}
+      </button>
+
+      <button className="cam-top-btn cam-top-btn--close" onClick={onStopCamera} title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    {/* zoom buttons — only when device supports it */}
+    {zoomRange && (
+      <div className="camera-fs__zoom" onClick={e => e.stopPropagation()}>
+        {[0.5, 1, 2, 5].filter(z => z >= zoomRange.min && z <= zoomRange.max).map(z => (
+          <button
+            key={z}
+            className={`cam-zoom-btn ${Math.abs(zoomLevel - z) < 0.3 ? 'cam-zoom-btn--active' : ''}`}
+            onClick={() => onSetZoom(z)}
+          >
+            {z}×
+          </button>
+        ))}
+      </div>
+    )}
+
+    {/* ── bottom bar: thumbnail | shutter | flip ──────────────────────────── */}
+    <div className="camera-fs__bottom" onClick={e => e.stopPropagation()}>
+      <div className="cam-thumb">
+        {lastThumb && <img src={lastThumb} alt="last" className="cam-thumb__img" />}
+      </div>
+
+      <button
+        className={`cam-shutter ${timerCount !== null ? 'cam-shutter--counting' : ''}`}
+        onClick={onCapturePhoto}
+      >
+        <div className="cam-shutter__inner" />
+      </button>
+
+      {canSwitch ? (
+        <button className="cam-flip-btn" onClick={onSwitchCamera}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 4v6h6"/><path d="M23 20v-6h-6"/>
+            <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+          </svg>
+        </button>
+      ) : (
+        <div className="cam-flip-btn cam-flip-btn--placeholder" />
+      )}
+    </div>
+
+    {/* hidden canvas — ref still works even inside portal */}
+    <canvas ref={canvasRef} className="hidden-canvas" />
+  </div>,
+  document.body
+);
+
 // ─── Step 1: Input ────────────────────────────────────────────────────────────
-// MODIFIED: Added drafts section (card UI, always visible when drafts exist)
 const InputStep = ({
-  onFileSelected, onCapture, cameraActive,
-  videoRef, canvasRef, onCapturePhoto, onStopCamera, onSwitchCamera,
-  canSwitch, facingMode,
+  onFileSelected, onCapture,
   drafts, onLoadDraft, onDeleteDraft,
 }) => (
   <div className="step-screen">
     <div className="step-hero">
       <div className="step-hero__icon"><Camera size={32} /></div>
-      <h1 className="step-hero__title">Analyze Proof</h1>
-      <p className="step-hero__sub">Capture or upload proofs to verify its authenticity and ownership</p>
+<h1 className="step-hero__title">Analyze Proof</h1>
+<p className="step-hero__sub">Capture and upload proofs to verify authenticity and ownership</p>
     </div>
 
-    {!cameraActive ? (
-      <>
-        <div className="input-choices">
-          {/* Capture — registration-first */}
-          <button className="choice-btn choice-btn--primary" onClick={onCapture}>
-            <div className="choice-btn__ico"><Camera size={28} /></div>
-            <div className="choice-btn__body">
-              <p className="choice-btn__title">Capture Image</p>
-              <p className="choice-btn__hint">Use your camera — auto-embeds your PINIT identity</p>
-            </div>
-            <ChevronRight size={18} className="choice-btn__arr" />
-          </button>
-
-          {/* Upload — verification-first */}
-          <label className="choice-btn choice-btn--secondary">
-            <div className="choice-btn__ico choice-btn__ico--sec"><Upload size={28} /></div>
-            <div className="choice-btn__body">
-              <p className="choice-btn__title">Upload Proof</p>
-              <p className="choice-btn__hint">Analyze & verify ownership of any image</p>
-            </div>
-            <ChevronRight size={18} className="choice-btn__arr" />
-            <input type="file" accept="image/*" className="hidden-input"
-              onChange={(e) => e.target.files[0] && onFileSelected(e.target.files[0])} />
-          </label>
-
-          {/* APK gallery picker */}
-          {!!(window.Capacitor?.isNativePlatform?.()) && (
-            <button className="choice-btn choice-btn--gallery" onClick={async () => {
-              try {
-                const { Camera: Cap, CameraResultType, CameraSource } = await import('@capacitor/camera');
-                const photo = await Cap.getPhoto({ quality: 100, allowEditing: false, resultType: CameraResultType.DataUrl, source: CameraSource.Photos });
-                if (photo.dataUrl) {
-                  const res = await fetch(photo.dataUrl);
-                  const blob = await res.blob();
-                  onFileSelected(new File([blob], 'gallery-image.png', { type: blob.type || 'image/png' }));
-                }
-              } catch (err) { if (!String(err).includes('cancelled') && !String(err).includes('AbortError')) alert('Could not open gallery: ' + err.message); }
-            }}>
-              <div className="choice-btn__ico choice-btn__ico--gallery"><ImageIcon size={28} /></div>
-              <div className="choice-btn__body">
-                <p className="choice-btn__title">Pick from Gallery</p>
-                <p className="choice-btn__hint">Choose an existing image from your device</p>
-              </div>
-              <ChevronRight size={18} className="choice-btn__arr" />
-            </button>
-          )}
+    <div className="input-choices">
+      {/* Capture — registration-first */}
+      <button className="choice-btn choice-btn--primary" onClick={onCapture}>
+        <div className="choice-btn__ico"><Camera size={28} /></div>
+        <div className="choice-btn__body">
+          <p className="choice-btn__title">Capture Image</p>
+          <p className="choice-btn__hint">Use your camera — auto-embeds your PINIT identity</p>
         </div>
+        <ChevronRight size={18} className="choice-btn__arr" />
+      </button>
 
-        {/* ── Drafts section — always visible when drafts exist ────────────── */}
-        {drafts.length > 0 && (
-          <div className="drafts-section">
-            <div className="drafts-header">
-              <FileText size={15} className="drafts-header__ico" />
-              <span className="drafts-header__title">Saved Drafts</span>
-              <span className="drafts-header__count">{drafts.length}</span>
-            </div>
-            <div className="drafts-list">
-              {drafts.map(draft => (
-                <div key={draft.id} className="draft-card">
-                  <div className="draft-card__thumb">
-                    {draft.preview
-                      ? <img src={draft.preview} alt="" className="draft-card__img" />
-                      : <div className="draft-card__ph"><ImageIcon size={20} /></div>}
-                    {draft.isEmbedded && (
-                      <div className="draft-card__badge">
-                        <Shield size={9} /> UUID
-                      </div>
-                    )}
-                  </div>
-                  <div className="draft-card__info">
-                    <p className="draft-card__name">{draft.fileName || 'Captured image'}</p>
-                    <p className="draft-card__meta">
-                      <span className={`draft-card__source draft-card__source--${draft.source === 'Camera' ? 'cam' : 'up'}`}>
-                        {draft.source === 'Camera' ? '📷 Camera' : '📁 Upload'}
-                      </span>
-                      <span className="draft-card__time">{draftTimeAgo(draft.timestamp)}</span>
-                    </p>
-                  </div>
-                  <div className="draft-card__acts">
-                    <button className="draft-card__open" onClick={() => onLoadDraft(draft)}>Open</button>
-                    <button className="draft-card__del" onClick={() => onDeleteDraft(draft.id)}>
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+      {/* Upload — verification-first */}
+      <label className="choice-btn choice-btn--secondary">
+        <div className="choice-btn__ico choice-btn__ico--sec"><Upload size={28} /></div>
+        <div className="choice-btn__body">
+<p className="choice-btn__title">Upload Proof</p>
+          <p className="choice-btn__hint">Analyze & verify ownership of any image</p>
+        </div>
+        <ChevronRight size={18} className="choice-btn__arr" />
+        <input type="file" accept="image/*" className="hidden-input"
+          onChange={(e) => e.target.files[0] && onFileSelected(e.target.files[0])} />
+      </label>
+
+      {/* APK gallery picker */}
+      {!!(window.Capacitor?.isNativePlatform?.()) && (
+        <button className="choice-btn choice-btn--gallery" onClick={async () => {
+          try {
+            const { Camera: Cap, CameraResultType, CameraSource } = await import('@capacitor/camera');
+            const photo = await Cap.getPhoto({ quality: 100, allowEditing: false, resultType: CameraResultType.DataUrl, source: CameraSource.Photos });
+            if (photo.dataUrl) {
+              const res = await fetch(photo.dataUrl);
+              const blob = await res.blob();
+              onFileSelected(new File([blob], 'gallery-image.png', { type: blob.type || 'image/png' }));
+            }
+          } catch (err) { if (!String(err).includes('cancelled') && !String(err).includes('AbortError')) alert('Could not open gallery: ' + err.message); }
+        }}>
+          <div className="choice-btn__ico choice-btn__ico--gallery"><ImageIcon size={28} /></div>
+          <div className="choice-btn__body">
+            <p className="choice-btn__title">Pick from Gallery</p>
+            <p className="choice-btn__hint">Choose an existing image from your device</p>
           </div>
-        )}
-      </>
-    ) : (
-      <div className="camera-view">
-        <video ref={videoRef} autoPlay playsInline muted className="camera-feed" />
-        <div className="camera-controls">
-          {canSwitch && (
-            <button className="cam-btn cam-btn--switch" onClick={onSwitchCamera}>🔄</button>
-          )}
-          <button className="cam-btn cam-btn--capture" onClick={onCapturePhoto}>
-            <div className="cam-btn__ring" />
-          </button>
-          <button className="cam-btn cam-btn--close" onClick={onStopCamera}>✕</button>
+          <ChevronRight size={18} className="choice-btn__arr" />
+        </button>
+      )}
+    </div>
+
+    {/* Drafts section */}
+    {drafts.length > 0 && (
+      <div className="drafts-section">
+        <div className="drafts-header">
+          <FileText size={15} className="drafts-header__ico" />
+          <span className="drafts-header__title">Saved Drafts</span>
+          <span className="drafts-header__count">{drafts.length}</span>
         </div>
-        <div className="camera-badge">{facingMode === 'environment' ? '📷 Back' : '🤳 Front'}</div>
+        <div className="drafts-list">
+          {drafts.map(draft => (
+            <div key={draft.id} className="draft-card">
+              <div className="draft-card__thumb">
+                {draft.preview
+                  ? <img src={draft.preview} alt="" className="draft-card__img" />
+                  : <div className="draft-card__ph"><ImageIcon size={20} /></div>}
+                {draft.isEmbedded && (
+                  <div className="draft-card__badge"><Shield size={9} /> UUID</div>
+                )}
+              </div>
+              <div className="draft-card__info">
+                <p className="draft-card__name">{draft.fileName || 'Captured image'}</p>
+                <p className="draft-card__meta">
+                  <span className={`draft-card__source draft-card__source--${draft.source === 'Camera' ? 'cam' : 'up'}`}>
+                    {draft.source === 'Camera' ? '📷 Camera' : '📁 Upload'}
+                  </span>
+                  <span className="draft-card__time">{draftTimeAgo(draft.timestamp)}</span>
+                </p>
+              </div>
+              <div className="draft-card__acts">
+                <button className="draft-card__open" onClick={() => onLoadDraft(draft)}>Open</button>
+                <button className="draft-card__del" onClick={() => onDeleteDraft(draft.id)}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     )}
-    <canvas ref={canvasRef} className="hidden-canvas" />
   </div>
 );
 
@@ -788,12 +858,13 @@ const ProcessingStep = ({ steps, currentStep }) => {
 };
 
 // ─── Step: Result ─────────────────────────────────────────────────────────────
+// MODIFIED: ownerCase-based actions, certificate button removed
 const ResultStep = ({
   report, preview, encryptedImage,
   onSaveVault, onProtectWithPINIT, onSaveDraftFromResult,
   onDownloadReport, onReset,
   savingVault, vaultSaved,
-  onGoToVault,
+  navigate,
 }) => {
   const ownerCase         = report.ownerCase;
   const isNewlyRegistered = report.ownershipInfo === 'Newly registered';
@@ -884,29 +955,41 @@ const ResultStep = ({
         </div>
       );
     }
-
-    if (ownerCase === 'OWN_CLEAN') {
+if (ownerCase === 'OWN_CLEAN') {
+  return (
+    <div className="result-actions">
+      {report.isAlreadyInVault ? (
+        <button
+          className="action-btn action-btn--primary"
+          onClick={() => navigate('/user/dashboard', { state: { tab: 'vault', highlightAsset: report.vaultAssetId || report.assetId } })}
+        >
+          <Eye size={16} /> View in Vault
+        </button>
+      ) : (
+        <button
+          className={`action-btn action-btn--primary ${vaultSaved ? 'action-btn--done' : ''}`}
+          onClick={onSaveVault}
+          disabled={savingVault || vaultSaved}
+        >
+          {savingVault
+            ? <><div className="btn-spinner" /> Saving…</>
+            : vaultSaved
+              ? '✅ Saved to Vault'
+              : <><ImageIcon size={16} /> Save to Vault</>}
+        </button>
+      )}
+      <button className="action-btn action-btn--again" onClick={onReset}>
+        <RefreshCw size={15} /> Analyze Another
+      </button>
+    </div>
+  );
+}
+if (ownerCase === 'OWN_MODIFIED') {
       return (
         <div className="result-actions">
           <button
             className="action-btn action-btn--primary"
-            onClick={() => onGoToVault?.(report.vaultAssetId || report.assetId)}
-          >
-            <Eye size={16} /> View in Vault
-          </button>
-          <button className="action-btn action-btn--again" onClick={onReset}>
-            <RefreshCw size={15} /> Analyze Another
-          </button>
-        </div>
-      );
-    }
-
-    if (ownerCase === 'OWN_MODIFIED') {
-      return (
-        <div className="result-actions">
-          <button
-            className="action-btn action-btn--primary"
-            onClick={() => onGoToVault?.(report.vaultAssetId || report.assetId)}
+            onClick={() => navigate('/user/dashboard', { state: { tab: 'vault', highlightAsset: report.vaultAssetId || report.assetId } })}
           >
             <Eye size={16} /> View Original in Vault
           </button>
@@ -1011,10 +1094,13 @@ const ResultStep = ({
         <div className="res-row">
           <span className="res-row__lbl">Owner</span>
           <span className="res-row__val">
-            {ownerCase === 'OWN_CLEAN' || ownerCase === 'OWN_MODIFIED' ? 'You'
-              : ownerCase === 'OTHER_CLEAN' || ownerCase === 'OTHER_MODIFIED' ? 'Another PINIT user'
-              : isNewlyRegistered ? 'You (just registered)'
-              : 'Unknown'}
+            {ownerCase === 'OWN_CLEAN' || ownerCase === 'OWN_MODIFIED'
+              ? (report.ownerName || 'You')
+              : ownerCase === 'OTHER_CLEAN' || ownerCase === 'OTHER_MODIFIED'
+                ? (report.ownerName || 'Another PINIT user')
+                : isNewlyRegistered
+                  ? (report.ownerName || 'You (just registered)')
+                  : 'Unknown'}
           </span>
         </div>
         {report.gpsLocation?.available ? (
@@ -1033,14 +1119,19 @@ const ResultStep = ({
         )}
       </div>
 
-      {/* 5. Image Details — simplified, human-friendly labels */}
+      {/* 5. Image Details — show current upload + original registration side by side */}
       <div className="res-card">
         <h3 className="res-card__title">📋 Image Details</h3>
+
+        {/* Always show current upload details */}
+        {(report.resolutionMismatch || report.rotationDetected > 0 || report.fromPHash) && (
+          <p className="res-card__section-label">Current Upload</p>
+        )}
         {[
           ['File name',     report.fileName || report.assetId || '—'],
           ['File type',     report.fileType  || '—'],
-          ['File size',     report.assetFileSize || report.uploadedSize || '—'],
-          ['Resolution',    report.assetResolution || '—'],
+          ['File size',     report.uploadedSize || report.assetFileSize || '—'],
+          ['Resolution',    report.uploadedResolution || report.assetResolution || '—'],
           ['Captured on',   report.timestamp ? fmt(report.timestamp) : '—'],
           ['Captured with', friendlyDevice(report.deviceName)],
         ].map(([l, v]) => (
@@ -1049,52 +1140,102 @@ const ResultStep = ({
             <span className="res-row__val">{v}</span>
           </div>
         ))}
-        {/* Small image warning */}
-        {(() => {
-          const res = report.assetResolution || report.uploadedResolution || '';
-          const [rw, rh] = res.split('x').map(Number);
-          return (rw > 0 && rh > 0 && rw * rh < 40000) ? (
-            <div className="res-small-warn">
-              ⚠️ Very small image ({rw}×{rh}px) — heuristic classification may be inaccurate.
-              UUID steganography still works correctly at this size.
+
+        {/* Show original registration details when modified */}
+        {(report.resolutionMismatch || report.rotationDetected > 0) && report.userEncryptedResolution && (
+          <>
+            <div className="res-card__divider" />
+            <p className="res-card__section-label">Original at Registration</p>
+            {[
+              ['Resolution',    report.userEncryptedResolution || report.assetResolution || '—'],
+              ['File size',     report.assetFileSize || '—'],
+              ['Registered on', report.dateEncrypted ? fmt(report.dateEncrypted) : (report.timestamp ? fmt(report.timestamp) : '—')],
+            ].map(([l, v]) => (
+              <div key={l} className="res-row">
+                <span className="res-row__lbl">{l}</span>
+                <span className="res-row__val res-row__val--original">{v}</span>
+              </div>
+            ))}
+          </>
+        )}
+
+        {/* pHash match — identified via visual fingerprint (WhatsApp/JPEG case) */}
+        {report.fromPHash && (
+          <>
+            <div className="res-card__divider" />
+            <p className="res-card__section-label">Identification Method</p>
+            <div className="res-row">
+              <span className="res-row__lbl">Identified via</span>
+              <span className="res-row__val">Visual fingerprint (pHash)</span>
             </div>
-          ) : null;
-        })()}
+            <div className="res-row">
+              <span className="res-row__lbl">Note</span>
+              <span className="res-row__val res-row__val--warn">UUID destroyed by JPEG compression (WhatsApp/social media)</span>
+            </div>
+          </>
+        )}
       </div>
 
-      {/* 6. Change Summary — with full modification banners */}
+      {/* 6. Change Summary — detailed per-case */}
       <div className="res-card">
         <h3 className="res-card__title">🔄 Change Summary</h3>
-        <p className="res-card__summary">{changeMap[report.caseCode] || report.detectedCase}</p>
 
-        {/* Rotation detected banner */}
-        {report.rotationDetected !== null && report.rotationDetected !== undefined && report.rotationDetected !== 0 && (
-          <div className="res-modification-banner res-modification-banner--rotation">
-            <span className="res-modification-banner__icon">🔄</span>
-            <div className="res-modification-banner__body">
-              <p className="res-modification-banner__title">Rotation Detected</p>
-              <p className="res-modification-banner__sub">{report.rotationMessage}</p>
-              <p className="res-modification-banner__note">
-                The encrypted data was successfully recovered despite rotation.
-              </p>
+        {/* Crop detected */}
+        {report.cropInfo?.isCropped && (
+          <div className="res-modification-block">
+            <div className="res-mod-type">✂️ Crop Detected</div>
+            <div className="res-row">
+              <span className="res-row__lbl">Original size</span>
+              <span className="res-row__val">{report.cropInfo.originalResolution}</span>
+            </div>
+            <div className="res-row">
+              <span className="res-row__lbl">Current size</span>
+              <span className="res-row__val res-row__val--warn">{report.cropInfo.currentResolution}</span>
+            </div>
+            <div className="res-row">
+              <span className="res-row__lbl">Pixels remaining</span>
+              <span className="res-row__val res-row__val--warn">{report.cropInfo.remainingPercentage} of original</span>
             </div>
           </div>
         )}
 
-        {/* Crop detected banner */}
-        {report.cropInfo?.isCropped && (
-          <div className="res-modification-banner res-modification-banner--crop">
-            <span className="res-modification-banner__icon">✂️</span>
-            <div className="res-modification-banner__body">
-              <p className="res-modification-banner__title">Crop Detected</p>
-              <p className="res-modification-banner__sub">
-                {report.cropInfo.originalResolution} → {report.cropInfo.currentResolution}
-              </p>
-              <p className="res-modification-banner__note">
-                {report.cropInfo.remainingPercentage} of original pixels remain.
-              </p>
+        {/* Rotation detected */}
+        {report.rotationDetected > 0 && (
+          <div className="res-modification-block">
+            <div className="res-mod-type">🔄 Rotation Detected</div>
+            <div className="res-row">
+              <span className="res-row__lbl">Rotation angle</span>
+              <span className="res-row__val res-row__val--warn">{report.rotationDetected}°</span>
+            </div>
+            <div className="res-row">
+              <span className="res-row__lbl">UUID status</span>
+              <span className="res-row__val res-row__val--good">Verified ✅</span>
             </div>
           </div>
+        )}
+
+        {/* WhatsApp / JPEG compression */}
+        {report.fromPHash && !report.cropInfo?.isCropped && (
+          <div className="res-modification-block">
+            <div className="res-mod-type">📱 JPEG Compression Detected</div>
+            <div className="res-row">
+              <span className="res-row__lbl">Likely source</span>
+              <span className="res-row__val res-row__val--warn">WhatsApp / Social media share</span>
+            </div>
+            <div className="res-row">
+              <span className="res-row__lbl">UUID status</span>
+              <span className="res-row__val res-row__val--warn">Destroyed by compression</span>
+            </div>
+            <div className="res-row">
+              <span className="res-row__lbl">Identified by</span>
+              <span className="res-row__val">Visual fingerprint match</span>
+            </div>
+          </div>
+        )}
+
+        {/* Exact match — no modifications */}
+        {!report.cropInfo?.isCropped && !report.rotationDetected && !report.fromPHash && (
+          <p className="res-card__summary">{changeMap[report.caseCode] || report.detectedCase}</p>
         )}
       </div>
 
@@ -1237,8 +1378,8 @@ const CertificateView = ({ report, preview, onShare, onDownload, onBack }) => {
 // MAIN CONTROLLER
 // ═════════════════════════════════════════════════════════════════════════════
 
-function Analyze({ user, onLogout, onGoToVault, onBack }) {
-  const navigate = useNavigate(); // still needed for /login redirect when !user
+function Analyze({ user, onLogout, onGoToVault, onBack, onVaultSaved }) {
+  const navigate = useNavigate();
   const userId   = localStorage.getItem('userUUID') || user?.id || '';
 
   // ── Step machine ──────────────────────────────────────────────────────────
@@ -1259,7 +1400,7 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
 
   // ── New state ─────────────────────────────────────────────────────────────
   const [ownerCase,        setOwnerCase]        = useState(null);      // OWN_CLEAN | OWN_MODIFIED | OTHER_CLEAN | OTHER_MODIFIED | NO_UUID
-  const [drafts,           setDrafts]           = useState([]);        // loaded from IndexedDB via useEffect
+  const [drafts, setDrafts] = useState([]);
   const [showExitModal,    setShowExitModal]    = useState(false);     // post_capture exit confirmation
   const [embeddingPhase,   setEmbeddingPhase]   = useState(0);         // 0=embedding, 1=preparing, 2=almost done
   const [captureMetadata,  setCaptureMetadata]  = useState(null);      // stored from embedding step for analyze-on-demand
@@ -1268,70 +1409,89 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
   const [cameraActive, setCameraActive] = useState(false);
   const [facingMode,   setFacingMode]   = useState('environment');
   const [canSwitch,    setCanSwitch]    = useState(false);
-  const videoRef  = useRef(null);
-  const canvasRef = useRef(null);
+  // ── Enhanced camera state ─────────────────────────────────────────────────
+  const [gridOn,       setGridOn]       = useState(false);
+  const [timerSecs,    setTimerSecs]    = useState(0);    // 0 | 3 | 10
+  const [timerCount,   setTimerCount]   = useState(null); // null or countdown number
+  const [torchOn,      setTorchOn]      = useState(false);
+  const [torchAvail,   setTorchAvail]   = useState(false);
+  const [zoomLevel,    setZoomLevel]    = useState(1);
+  const [zoomRange,    setZoomRange]    = useState(null); // {min,max} from capabilities
+  const [focusPt,      setFocusPt]      = useState(null); // {x,y} tap-focus indicator
+  const [lastThumb,    setLastThumb]    = useState(null); // thumbnail of last capture
+
+  const videoRef         = useRef(null);
+  const canvasRef        = useRef(null);
+  const streamRef        = useRef(null);       // holds live MediaStream
+  const imageCaptureRef  = useRef(null);       // holds ImageCapture instance
+  const pinchDistRef     = useRef(null);       // pinch-to-zoom last distance
+  const timerIntervalRef = useRef(null);       // timer interval handle
 
   useEffect(() => { if (!user) navigate('/login'); }, [user, navigate]);
+  useEffect(() => { getDrafts().then(setDrafts).catch(() => setDrafts([])); }, []);
 
-  // Load drafts from IndexedDB on mount
-  useEffect(() => { idbGetAllDrafts().then(setDrafts).catch(() => setDrafts([])); }, []);
 
-  // ── Draft management (IndexedDB) ─────────────────────────────────────────
-  const refreshDrafts = () => idbGetAllDrafts().then(setDrafts).catch(() => {});
+  // ── Draft management ──────────────────────────────────────────────────────
+  const refreshDrafts = () => getDrafts().then(setDrafts).catch(() => {});
 
-  const saveDraft = async (overridePreview, overrideFile, isEmbedded, source, fileName) => {
-    try {
-      const thumb = await _compressThumb(overridePreview || preview, 240);
-      await idbPutDraft({
-        id        : Date.now(),
-        preview   : thumb,                                      // small JPEG — display only
-        fileBase64: overrideFile || encryptedImage || preview,  // full PNG  — UUID intact
-        fileName  : fileName || selectedFile?.name || 'capture.png',
-        source    : source   || captureSource,
-        isEmbedded: isEmbedded ?? !!encryptedImage,
-        timestamp : Date.now(),
-      });
-      refreshDrafts();
-      return true;
-    } catch (err) {
-      console.error('saveDraft failed:', err);
-      alert('Could not save draft. Please try again.');
-      return false;
-    }
-  };
+const saveDraft = async (overridePreview, overrideFile, isEmbedded, source, fileName) => {
+  try {
+    const draft = {
+      id        : Date.now(),
+      preview   : overridePreview || preview,
+      fileBase64: overrideFile    || encryptedImage || preview,
+      fileName  : fileName        || selectedFile?.name || 'capture.png',
+      source    : source          || captureSource,
+      isEmbedded: isEmbedded      ?? !!encryptedImage,
+      timestamp : Date.now(),
+    };
+    await persistDraft(draft);
+    refreshDrafts();
+    return true;
+  } catch (err) {
+    console.error('saveDraft failed:', err);
+    alert('Could not save draft. Please try again.');
+    return false;
+  }
+};
 
   const handleSaveDraftFromCapture = async () => {
-    const ok = await saveDraft(encryptedImage||preview, encryptedImage||preview, !!encryptedImage, captureSource);
-    if (ok) handleReset();
-  };
+  const ok = await saveDraft(encryptedImage||preview, encryptedImage||preview, !!encryptedImage, captureSource);
+  if (ok) handleReset();
+};
 
-  const handleSaveDraftFromResult = async () => {
-    const ok = await saveDraft(preview, preview, false, captureSource);
-    if (ok) handleReset();
-  };
+const handleSaveDraftFromResult = async () => {
+  const ok = await saveDraft(preview, preview, false, captureSource);
+  if (ok) handleReset();
+};
 
-  const handleDeleteDraft = async (id) => {
-    await idbRemoveDraft(id);
-    refreshDrafts();
-  };
+const handleDeleteDraft = async (id) => {
+  await removeDraft(id);
+  refreshDrafts();
+};
 
   const handleLoadDraft = async (draft) => {
-    setPreview(draft.fileBase64);
-    setCaptureSource(draft.source);
-    setEncryptedImage(draft.isEmbedded ? draft.fileBase64 : null);
-    setReport(null); setVaultSaved(false); setOwnerCase(null);
+  setPreview(draft.fileBase64);
+  setCaptureSource(draft.source);
+  setEncryptedImage(draft.isEmbedded ? draft.fileBase64 : null);
+  setReport(null); setVaultSaved(false); setOwnerCase(null);
 
-    // Reconstruct File from base64 so analysis pipeline has something to work with
-    try {
-      const res  = await fetch(draft.fileBase64);
-      const blob = await res.blob();
-      const file = new File([blob], draft.fileName, { type: blob.type || 'image/png' });
-      setSelectedFile(file);
-      if (draft.isEmbedded) setEncryptedFile(file);
-    } catch { /* non-critical */ }
+  try {
+    const res  = await fetch(draft.fileBase64);
+    const blob = await res.blob();
+    const file = new File([blob], draft.fileName, { type: blob.type || 'image/png' });
+    setSelectedFile(file);
+    if (draft.isEmbedded) setEncryptedFile(file);
+  } catch { /* non-critical */ }
 
-    setStep('post_capture');
-  };
+  // ── FIX: auto-delete draft once opened for analysis ──────────────────────
+  // User tapped "Open" → they are now working with this image.
+  // Keeping it in drafts would be confusing — remove it immediately.
+  await removeDraft(draft.id);
+  refreshDrafts();
+
+  setStep('post_capture');
+};
 
   // ── CAPTURE FLOW: step 1 — embed UUID automatically ───────────────────────
   const startCaptureEmbedding = async (file, previewUrl) => {
@@ -1575,15 +1735,18 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
 
       const currentRes = `${canvas.width}x${canvas.height}`;
       let cropInfo = null; let resolutionMismatch = false;
-      if (finalUUID.found && finalUUID.originalResolution) {
-        const ori = finalUUID.originalResolution.replace(/\s/g,'').toLowerCase();
+      // FIX: if UUID didn't store resolution (old IMGCRYPT format), fall back to vault record
+      const embeddedRes = finalUUID.originalResolution
+        || (originalRecord?.resolution) || null;
+      if (finalUUID.found && embeddedRes) {
+        const ori = embeddedRes.replace(/\s/g,'').toLowerCase();
         const cur = currentRes.replace(/\s/g,'').toLowerCase();
         if (ori !== cur) {
-          const [ow, oh] = finalUUID.originalResolution.split(/\s*x\s*/i).map(Number);
+          const [ow, oh] = embeddedRes.split(/\s*x\s*/i).map(Number);
           if (!(ow === canvas.height && oh === canvas.width)) {
             cropInfo = {
               isCropped: true,
-              originalResolution:  finalUUID.originalResolution,
+              originalResolution:  embeddedRes,
               currentResolution:   currentRes,
               originalPixels:      (ow*oh).toLocaleString(),
               currentPixels:       (canvas.width*canvas.height).toLocaleString(),
@@ -1602,8 +1765,10 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
       );
 
       const totalPixels = canvas.width * canvas.height;
-      const assetId     = generateAssetId(imageData);
-      const certId      = generateAuthorshipCertificateId(finalUUID.userId || userId, finalUUID.deviceId || deviceId);
+      const sha256Raw = await computeSHA256(file);
+const assetId = generateAssetId(imageData);
+      const certId = generateAuthorshipCertificateId(finalUUID.userId || userId, finalUUID.deviceId || deviceId);
+      const isAlreadyInVault = !!(originalRecord && originalRecord.file_hash === sha256Raw);
 
       // ── Determine ownerCase ────────────────────────────────────────────────
       const norm = (id) => (id || '').replace(/-/g, '').toLowerCase();
@@ -1612,6 +1777,8 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
         computedOwnerCase = 'OWN_CLEAN'; // ownershipInfo='Newly registered' drives UI
       } else if (!finalUUID.found) {
         computedOwnerCase = 'NO_UUID';
+		 if (canvas.width * canvas.height < 40000) {
+              }
       } else {
         const isOwn            = norm(finalUUID.userId) === norm(userId);
         // ── FIX: rotation is also a modification — treat rotated image as modified
@@ -1636,17 +1803,19 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
             : { available: false };
 
         builtReport = {
-          assetId:                   rec.asset_id || assetId,
-          vaultAssetId:              rec.asset_id || null, // used for "View in Vault" navigation
+          assetId:                   assetId,
+          vaultAssetId:              rec.asset_id || assetId,
+          isAlreadyInVault:          isAlreadyInVault,
           fileName:                  file.name,
           fileType:                  file.type,
           uniqueUserId:              rec.user_id || finalUUID.userId || null,
           ownerName:                 rec.owner_name || user?.name || user?.email || null,
           assetFileSize:             rec.file_size || (file.size/1024).toFixed(2)+' KB',
-          assetResolution:           rec.resolution || finalUUID.originalResolution || currentRes,
-          userEncryptedResolution:   finalUUID.originalResolution || currentRes,
-          timestamp:                 rec.capture_timestamp ? new Date(rec.capture_timestamp).getTime() : (finalUUID.timestamp || null),
-          gpsLocation:               gps,
+          assetResolution:           rec.resolution || embeddedRes || currentRes,
+          userEncryptedResolution:   embeddedRes || currentRes,
+timestamp: mode === 'newly_registered'
+  ? (finalUUID.timestamp || Date.now())
+  : (rec.capture_timestamp ? new Date(rec.capture_timestamp).getTime() : (finalUUID.timestamp || null)),          gpsLocation:               gps,
           totalPixels:               totalPixels.toLocaleString(),
           pixelsVerifiedWithBiometrics: Math.floor(totalPixels*0.98).toLocaleString(),
           deviceName:                finalUUID.deviceName || rec.device_name || getCurrentDeviceName(),
@@ -1746,94 +1915,102 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
   };
 
   // ── Save to vault (manual only — never auto) ──────────────────────────────
-  const handleSaveVault = async () => {
-    if (!report || savingVault || vaultSaved) return;
-    setSavingVault(true);
-    try {
-      const img = await loadImage(encryptedImage || preview);
+const handleSaveVault = async () => {
+  if (!report || savingVault || vaultSaved) return;
+  setSavingVault(true);
+  try {
+    const img = await loadImage(encryptedImage || preview);
 
-      // ── Thumbnail ──────────────────────────────────────────────────────────
-      // For small images (≤ 200px): store the full PNG as the thumbnail so the
-      // UUID survives. Converting a UUID-embedded PNG to JPEG (even quality 0.4)
-      // destroys all embedded LSBs, making re-analysis impossible.
-      // For large images: 80×80 JPEG thumbnail is fine for display.
-      const isSmallImage = img.width <= 200 && img.height <= 200;
-      let thumbnail;
-      if (isSmallImage && encryptedImage) {
-        // Full PNG preserves UUID — safe because small images are ≤ ~15 KB
-        thumbnail = encryptedImage;
-      } else {
-        const tc = document.createElement('canvas');
-        const sz = 80; tc.width = sz; tc.height = sz;
-        const sc = Math.max(sz/img.width, sz/img.height);
-        tc.getContext('2d').drawImage(img, (sz/2)-(img.width/2)*sc, (sz/2)-(img.height/2)*sc, img.width*sc, img.height*sc);
-        thumbnail = tc.toDataURL('image/jpeg', 0.4);
-      }
-
-      const perceptualHash = (() => {
-        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
-        const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
-        return computePerceptualHash(c);
-      })();
-
-      // FIX (TC-01): Hash the encrypted blob bytes, not the original File.
-      let sha256Hash = await computeSHA256(encryptedFile || selectedFile);
-      try {
-        const fileToHash = encryptedFile || selectedFile;
-        const encBuf  = await fileToHash.arrayBuffer();
-        const hashBuf = await crypto.subtle.digest('SHA-256', encBuf);
-        sha256Hash    = Array.from(new Uint8Array(hashBuf))
-          .map(b => b.toString(16).padStart(2, '0')).join('');
-      } catch (e) { console.warn('SHA-256 fallback used:', e); }
-
-      const blockchainAnchor = generateBlockchainAnchor(sha256Hash, Date.now());
-
-      await vaultAPI.save({
-        asset_id:           report.assetId,
-        owner_name:         user?.name || user?.email || user?.username || userId,
-        user_id:            userId,
-        embedded_uuid:      report.uniqueUserId || userId,   // steganographic UUID stored separately from auth user_id
-        file_name:          `pinit-${report.assetId}.png`,  // assetId in filename so re-upload matches correctly
-        file_size:          report.assetFileSize || report.uploadedSize,
-        thumbnail_base64:   thumbnail,
-        full_image_base64:  encryptedImage || null,          // full lossless PNG — backend stores as full_image_url
-        device_id:          report.deviceId || getDeviceFingerprint(),
-        certificate_id:     report.authorshipCertificateId || null,
-        owner_email:        user?.email || null,
-        file_hash:          sha256Hash || null,
-        visual_fingerprint: perceptualHash || null,
-        blockchain_anchor:  blockchainAnchor || null,
-        resolution:         report.assetResolution || null,
-        capture_timestamp:  report.timestamp ? new Date(report.timestamp).toISOString() : new Date().toISOString(),
-        gps_latitude:       report.gpsLocation?.available ? report.gpsLocation.latitude  : null,
-        gps_longitude:      report.gpsLocation?.available ? report.gpsLocation.longitude : null,
-        gps_source:         report.gpsLocation?.source || null,
-        ip_address:         report.ipAddress || null,
-        device_name:        report.deviceName || null,
-        confidence:         report.confidence || null,
-        detected_case:      report.detectedCase || null,
-        analysis_summary:   report.reasoning?.[0] || null,
-      });
-
-      // ── Device-local cache ────────────────────────────────────────────────
-      // Store the full PNG in IndexedDB on this device so downloadImage()
-      // and VaultDetail can use the real image even if backend only has thumbnail.
-      // This is the primary fix for download→re-upload data loss.
-      if (encryptedImage && report.assetId) {
-        try {
-          const { cacheVaultFullImage } = await import('../vault/utils/vaultImageCache');
-          await cacheVaultFullImage(report.assetId, encryptedImage);
-        } catch (e) { console.warn('Local image cache failed (non-critical):', e); }
-      }
-      setVaultSaved(true);
-    } catch (err) {
-      console.error('Vault save failed:', err);
-      alert('Could not save to vault: ' + err.message);
-    } finally {
-      setSavingVault(false);
+    // For small images (≤200px) keep full PNG so UUID survives.
+    // For large images use 80×80 JPEG thumbnail.
+    const isSmallImage = img.width <= 200 && img.height <= 200;
+    let thumbnail;
+    if (isSmallImage && encryptedImage) {
+      thumbnail = encryptedImage;
+    } else {
+      const tc = document.createElement('canvas');
+      const sz = 80; tc.width = sz; tc.height = sz;
+      const sc = Math.max(sz / img.width, sz / img.height);
+      tc.getContext('2d').drawImage(
+        img,
+        (sz / 2) - (img.width / 2) * sc,
+        (sz / 2) - (img.height / 2) * sc,
+        img.width * sc, img.height * sc
+      );
+      thumbnail = tc.toDataURL('image/jpeg', 0.4);
     }
-  };
 
+    const perceptualHash = (() => {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      c.getContext('2d').drawImage(img, 0, 0);
+      return computePerceptualHash(c);
+    })();
+
+    let sha256Hash = await computeSHA256(encryptedFile || selectedFile);
+    try {
+      const fileToHash = encryptedFile || selectedFile;
+      const encBuf  = await fileToHash.arrayBuffer();
+      const hashBuf = await crypto.subtle.digest('SHA-256', encBuf);
+      sha256Hash = Array.from(new Uint8Array(hashBuf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) { console.warn('SHA-256 fallback used:', e); }
+
+    const blockchainAnchor = generateBlockchainAnchor(sha256Hash, Date.now());
+
+    await vaultAPI.save({
+      asset_id:           report.assetId,
+      owner_name:         user?.name || user?.email || user?.username || userId,
+      user_id:            userId,
+      embedded_uuid:      report.uniqueUserId || userId,
+      file_name:          `pinit-${report.assetId}.png`,
+      file_size:          report.assetFileSize || report.uploadedSize,
+      thumbnail_base64:   thumbnail,
+      full_image_base64:  encryptedImage || null,
+      device_id:          report.deviceId || getDeviceFingerprint(),
+      certificate_id:     report.authorshipCertificateId || null,
+      owner_email:        user?.email || null,
+      file_hash:          sha256Hash || null,
+      visual_fingerprint: perceptualHash || null,
+      blockchain_anchor:  blockchainAnchor || null,
+      resolution:         report.assetResolution || null,
+      capture_timestamp:  report.timestamp
+        ? new Date(report.timestamp).toISOString()
+        : new Date().toISOString(),
+      gps_latitude:       report.gpsLocation?.available ? report.gpsLocation.latitude  : null,
+      gps_longitude:      report.gpsLocation?.available ? report.gpsLocation.longitude : null,
+      gps_source:         report.gpsLocation?.source || null,
+      ip_address:         report.ipAddress || null,
+      device_name:        report.deviceName || null,
+      confidence:         report.confidence || null,
+      detected_case:      report.detectedCase || null,
+      analysis_summary:   report.reasoning?.[0] || null,
+    });
+
+    // Cache full PNG locally for VaultDetail
+    if (encryptedImage && report.assetId) {
+      try {
+        const { cacheVaultFullImage } = await import('../vault/utils/vaultImageCache');
+        await cacheVaultFullImage(report.assetId, encryptedImage);
+      } catch (e) { console.warn('Local image cache failed (non-critical):', e); }
+    }
+try {
+        const _vsMod = await import('../vault/utils/vaultStorage');
+        const storeFullImage = _vsMod.storeFullImage || _vsMod.default?.storeFullImage;
+        if (typeof storeFullImage === 'function') {
+          await storeFullImage(report.assetId, encryptedImage || preview);
+        }
+      } catch (e) { console.warn('IDB store failed (non-critical):', e); }
+    setVaultSaved(true);
+           setTimeout(() => onVaultSaved?.(), 800); // ← wait 800ms before switching tab
+
+  } catch (err) {
+    console.error('Vault save failed:', err);
+    alert('Could not save to vault: ' + err.message);
+  } finally {
+    setSavingVault(false);
+  }
+};
   // ── Download report (PDF) ─────────────────────────────────────────────────
   const handleDownloadReport = () => {
     if (!report) return;
@@ -1865,47 +2042,173 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
     }).catch(()=>saveFileToDevice(pngUrl,'PINIT-report-'+(report.assetId||Date.now())+'.png'));
   };
 
-  // ── Camera functions (unchanged) ──────────────────────────────────────────
+  // ── Camera functions — enhanced ───────────────────────────────────────────
+
+  // Attach stream to video + probe ImageCapture capabilities
+  const attachStream = async (stream, mode) => {
+    streamRef.current = stream;
+    const track = stream.getVideoTracks()[0];
+
+    // Probe ImageCapture (zoom / torch / focus) — silently skip if not supported
+    try {
+      const ic = new ImageCapture(track);
+      imageCaptureRef.current = ic;
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.zoom)  setZoomRange({ min: caps.zoom.min, max: caps.zoom.max });
+      else            setZoomRange(null);
+      setTorchAvail(!!(caps.torch));
+    } catch {
+      imageCaptureRef.current = null;
+      setZoomRange(null);
+      setTorchAvail(false);
+    }
+
+    setTorchOn(false);
+    setZoomLevel(1);
+
+    const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    setCanSwitch(devices.filter(d => d.kind === 'videoinput').length > 1);
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadedmetadata = () => videoRef.current.play().catch(console.error);
+    }
+  };
+
   const startCamera = async () => {
     try {
       setCameraActive(true);
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false
+        video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
       }).catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }));
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      setCanSwitch(devices.filter(d=>d.kind==='videoinput').length > 1);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => videoRef.current.play().catch(console.error);
-      }
+      await attachStream(stream, facingMode);
     } catch (err) {
-      alert('Camera error: ' + err.message); setCameraActive(false);
+      alert('Camera error: ' + err.message);
+      setCameraActive(false);
     }
   };
 
   const stopCamera = () => {
-    videoRef.current?.srcObject?.getTracks().forEach(t => t.stop());
-    if (videoRef.current) videoRef.current.srcObject = null;
+    // Clear timer if running
+    if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null; }
+    setTimerCount(null);
+    // Stop stream
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    if (videoRef.current)  videoRef.current.srcObject = null;
+    imageCaptureRef.current = null;
     setCameraActive(false);
+    setTorchOn(false);
+    setFocusPt(null);
   };
 
+  // FIX: no more race condition — pass newMode directly instead of relying on state
   const switchCamera = async () => {
-    stopCamera();
     const newMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(newMode);
-    setTimeout(startCamera, 200);
+    // Stop current stream
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    if (videoRef.current)  videoRef.current.srcObject = null;
+    imageCaptureRef.current = null;
+    setTorchAvail(false); setTorchOn(false); setZoomRange(null); setZoomLevel(1);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: newMode }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      }).catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }));
+      await attachStream(stream, newMode);
+    } catch (err) {
+      alert('Camera switch failed: ' + err.message);
+      setCameraActive(false);
+    }
   };
 
-  // MODIFIED: capturePhoto → triggers capture flow (embedding first)
-  const capturePhoto = () => {
+  // ── Tap to focus + expose ─────────────────────────────────────────────────
+  const handleTapFocus = async (e) => {
+    if (!videoRef.current) return;
+    const rect = videoRef.current.getBoundingClientRect();
+    const px   = e.clientX - rect.left;
+    const py   = e.clientY - rect.top;
+    const x    = px / rect.width;
+    const y    = py / rect.height;
+    setFocusPt({ x: px, y: py });
+    setTimeout(() => setFocusPt(null), 1200);
+    try {
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (track) {
+        const caps = track.getCapabilities ? track.getCapabilities() : {};
+        const adv  = {};
+        if (caps.focusMode?.includes('manual')) adv.focusMode = 'manual';
+        if (caps.pointsOfInterest)              adv.pointsOfInterest = [{ x, y }];
+        if (caps.exposureMode?.includes('manual')) adv.exposureMode = 'manual';
+        if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] });
+      }
+    } catch { /* device doesn't support — silently ignore */ }
+  };
+
+  // ── Pinch to zoom ─────────────────────────────────────────────────────────
+  const handleTouchMove = (e) => {
+    if (e.touches.length !== 2 || !zoomRange) return;
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    if (pinchDistRef.current !== null) {
+      const delta   = (dist - pinchDistRef.current) / 150;
+      const newZoom = Math.min(zoomRange.max, Math.max(zoomRange.min, zoomLevel + delta));
+      setZoomLevel(newZoom);
+      try {
+        const track = streamRef.current?.getVideoTracks()[0];
+        if (track) track.applyConstraints({ advanced: [{ zoom: newZoom }] });
+      } catch {}
+    }
+    pinchDistRef.current = dist;
+  };
+
+  const handleTouchEnd = () => { pinchDistRef.current = null; };
+
+  // ── Flash / torch ─────────────────────────────────────────────────────────
+  const toggleTorch = async () => {
+    if (!torchAvail) return;
+    try {
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (track) {
+        const next = !torchOn;
+        await track.applyConstraints({ advanced: [{ torch: next }] });
+        setTorchOn(next);
+      }
+    } catch {}
+  };
+
+  // ── Zoom buttons ──────────────────────────────────────────────────────────
+  const applyZoom = async (level) => {
+    if (!zoomRange) return;
+    const clamped = Math.min(zoomRange.max, Math.max(zoomRange.min, level));
+    setZoomLevel(clamped);
+    try {
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (track) await track.applyConstraints({ advanced: [{ zoom: clamped }] });
+    } catch {}
+  };
+
+  // ── The actual frame-grab + embed trigger (unchanged logic, just extracted) ─
+  const doCapture = () => {
     if (!videoRef.current || !canvasRef.current) return;
     const v = videoRef.current; const c = canvasRef.current;
     c.width = v.videoWidth; c.height = v.videoHeight;
-    c.getContext('2d').drawImage(v, 0, 0);
+    // FIX: willReadFrequently for perf (was missing on capture canvas)
+    c.getContext('2d', { willReadFrequently: true }).drawImage(v, 0, 0);
     c.toBlob(blob => {
+      // Save small thumbnail to show in camera corner
+      const tCanvas = document.createElement('canvas');
+      tCanvas.width = 56; tCanvas.height = 56;
+      const tImg = new Image();
+      tImg.onload = () => { tCanvas.getContext('2d').drawImage(tImg, 0, 0, 56, 56); setLastThumb(tCanvas.toDataURL('image/jpeg', 0.6)); URL.revokeObjectURL(tImg.src); };
+      tImg.src = URL.createObjectURL(blob);
+
       const file = new File([blob], 'camera-capture.png', { type: 'image/png' });
       stopCamera();
-      // CAPTURE FLOW: set state, then start auto-embedding
+      // ── CAPTURE FLOW — 100% UNCHANGED ────────────────────────────────────
       setCaptureSource('Camera');
       setSelectedFile(file);
       setEncryptedImage(null);
@@ -1921,6 +2224,26 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  // MODIFIED: capturePhoto — wraps doCapture with optional timer countdown
+  const capturePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    if (timerSecs === 0) { doCapture(); return; }
+    // Countdown timer
+    let count = timerSecs;
+    setTimerCount(count);
+    timerIntervalRef.current = setInterval(() => {
+      count--;
+      if (count <= 0) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+        setTimerCount(null);
+        doCapture();
+      } else {
+        setTimerCount(count);
+      }
+    }, 1000);
   };
 
   const handleReset = () => {
@@ -1939,7 +2262,7 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
     : step === 'post_capture' ? 'Image Captured'
     : step === 'checking'     ? 'Verifying…'
     : step === 'processing'   ? 'Analyzing…'
-    : '';
+    : 'Analyze Proof';
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -1949,11 +2272,9 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
       <div className="analyze-topbar">
         <button className="analyze-back" onClick={() => {
           if (step === 'post_capture') {
-            setShowExitModal(true);
-          } else if (step === 'input') {
-            onBack?.();        // return to Home's previous tab
+            setShowExitModal(true); // show modal instead of navigating away
           } else {
-            handleReset();     // mid-flow: reset back to input step
+            navigate('/user/dashboard');
           }
         }}>
           <ArrowLeft size={20} />
@@ -1973,17 +2294,31 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
           <InputStep
             onFileSelected={handleFileSelected}
             onCapture={startCamera}
-            cameraActive={cameraActive}
+            drafts={drafts}
+            onLoadDraft={handleLoadDraft}
+            onDeleteDraft={handleDeleteDraft}
+          />
+        )}
+
+        {/* CameraPortal renders into document.body — escapes all overflow/z-index parents */}
+        {cameraActive && (
+          <CameraPortal
             videoRef={videoRef}
             canvasRef={canvasRef}
+            gridOn={gridOn}           onToggleGrid={() => setGridOn(g => !g)}
+            torchOn={torchOn}         torchAvail={torchAvail}   onToggleTorch={toggleTorch}
+            timerSecs={timerSecs}     onToggleTimer={() => setTimerSecs(s => s === 0 ? 3 : s === 3 ? 10 : 0)}
+            timerCount={timerCount}
+            zoomLevel={zoomLevel}     zoomRange={zoomRange}     onSetZoom={applyZoom}
+            focusPt={focusPt}
+            onTapFocus={handleTapFocus}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            lastThumb={lastThumb}
             onCapturePhoto={capturePhoto}
             onStopCamera={stopCamera}
             onSwitchCamera={switchCamera}
             canSwitch={canSwitch}
-            facingMode={facingMode}
-            drafts={drafts}
-            onLoadDraft={handleLoadDraft}
-            onDeleteDraft={handleDeleteDraft}
           />
         )}
 
@@ -2018,7 +2353,7 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
             onReset={handleReset}
             savingVault={savingVault}
             vaultSaved={vaultSaved}
-            onGoToVault={onGoToVault}
+            navigate={navigate}
           />
         )}
 
@@ -2030,7 +2365,7 @@ function Analyze({ user, onLogout, onGoToVault, onBack }) {
       {/* Exit modal — shown when back is pressed from post_capture */}
       {showExitModal && (
         <ExitModal
-          onSaveDraft={async () => { await handleSaveDraftFromCapture(); setShowExitModal(false); }}
+          onSaveDraft={() => { handleSaveDraftFromCapture(); setShowExitModal(false); }}
           onDiscard={() => { setShowExitModal(false); handleReset(); }}
           onCancel={() => setShowExitModal(false)}
         />

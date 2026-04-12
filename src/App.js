@@ -81,6 +81,7 @@ function App() {
     refreshUUID(token);
   };
 
+  // REPLACE WITH:
   const handleLogout = () => {
     // Preserve biometric data across logout
     const biometricEnrolled = localStorage.getItem('biometricEnrolled');
@@ -89,6 +90,13 @@ function App() {
     const savedToken        = localStorage.getItem('savedToken');
     const savedUser         = localStorage.getItem('savedUser');
 
+    // ── Preserve profile settings across logout ──────────────────────────
+    const displayName  = localStorage.getItem('pinit_display_name');
+    const avatar       = localStorage.getItem('pinit_avatar');
+    const pushNotif    = localStorage.getItem('pinit_push_notif');
+    const emailNotif   = localStorage.getItem('pinit_email_notif');
+    const theme        = localStorage.getItem('pinit_theme');
+
     removeToken();
 
     if (biometricEnrolled) localStorage.setItem('biometricEnrolled',    biometricEnrolled);
@@ -96,6 +104,13 @@ function App() {
     if (biometricCredId)   localStorage.setItem('biometricCredentialId', biometricCredId);
     if (savedToken)        localStorage.setItem('savedToken',            savedToken);
     if (savedUser)         localStorage.setItem('savedUser',             savedUser);
+
+    // Restore profile settings
+    if (displayName) localStorage.setItem('pinit_display_name', displayName);
+    if (avatar)      localStorage.setItem('pinit_avatar',       avatar);
+    if (pushNotif)   localStorage.setItem('pinit_push_notif',   pushNotif);
+    if (emailNotif)  localStorage.setItem('pinit_email_notif',  emailNotif);
+    if (theme)       localStorage.setItem('pinit_theme',        theme);
 
     setCurrentUser(null);
     setUserRole(null);

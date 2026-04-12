@@ -258,7 +258,7 @@ const Copy = ({ size }) => (
 );
 
 // ─── Main Component ────────────────────────────────────────────────────────────
-function Activity({ reports, vault, certs, lreports, lvault, lcerts, onRefresh, onAnalyze }) {
+function Activity({ user, reports, vault, certs, lreports, lvault, lcerts, onRefresh, onAnalyze }) {
   const [filter,     setFilter]     = useState('all');
   const [search,     setSearch]     = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -297,11 +297,64 @@ function Activity({ reports, vault, certs, lreports, lvault, lcerts, onRefresh, 
 
   const handleApprove = async (linkId, req) => {
     try {
+      // Step 1: Tell backend the request is approved
       await approveDownloadRequest(linkId, req.id);
-      alert(`Approved — download link sent to ${req.recipient_email}`);
+
+      // Step 2: Find the share link to get its token/url
+      const approvedLink = shareLinks.find(l => l.id === linkId);
+      const shareUrl     = approvedLink?.url || approvedLink?.share_url || '';
+      const fileName     = approvedLink?.assets?.file_name
+                         || approvedLink?.file_name
+                         || approvedLink?.asset?.file_name
+                         || 'your image';
+      const ownerEmail   = user?.email || user?.username || '';
+
+      // Step 3: Open mailto so owner can directly notify recipient
+      const subject = encodeURIComponent('Your PINIT Download Request Has Been Approved');
+      const body    = encodeURIComponent(
+        `Hi ${req.recipient_name || 'there'},
+
+` +
+        `Your download request for "${fileName}" has been approved.
+
+` +
+        `Use this link to download the image:
+${shareUrl}
+
+` +
+        `Note: This link allows direct download.
+
+` +
+        `— ${ownerEmail} via PINIT`
+      );
+      const mailtoUrl = `mailto:${req.recipient_email}?subject=${subject}&body=${body}`;
+
+      // Step 4: Refresh list
       fetchShareLinks();
+
+      // Step 5: Open email client with pre-filled message
+      window.open(mailtoUrl, '_blank');
+
     } catch (e) {
-      alert(e.message);
+      // Even if backend fails, still let owner email recipient manually
+      const approvedLink = shareLinks.find(l => l.id === linkId);
+      const shareUrl     = approvedLink?.url || approvedLink?.share_url || '';
+      const subject = encodeURIComponent('Your PINIT Download Request Has Been Approved');
+      const body    = encodeURIComponent(
+        `Hi ${req.recipient_name || 'there'},
+
+` +
+        `Your download request has been approved.
+
+` +
+        `Use this link:
+${shareUrl}
+
+` +
+        `— via PINIT`
+      );
+      window.open(`mailto:${req.recipient_email}?subject=${subject}&body=${body}`, '_blank');
+      fetchShareLinks();
     }
   };
   // ────────────────────────────────────────────────────────────────────────────

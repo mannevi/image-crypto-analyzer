@@ -94,16 +94,18 @@ function Home({ user, onLogout }) {
   // ── Pending highlight: assetId to auto-open in Vault (from Analyze nav) ───
   const [pendingHighlight, setPendingHighlight] = useState(null);
 
-  // On mount: read navigation state, switch to vault tab if requested
+  // Read navigation state, switch to vault tab if requested.
+  // FIX: was [] — only ran once on mount so navigate() from Analyze never triggered it.
+  // Now depends on location.state so it re-runs every time Analyze navigates here.
   useEffect(() => {
-    const navState = location.state;
-    if (!navState) return;
-    if (navState.tab === 'vault') {
+    if (!location.state?.tab) return;
+    if (location.state.tab === 'vault') {
       setTab('vault');
-      if (navState.highlightAsset) setPendingHighlight(navState.highlightAsset);
+      if (location.state.highlightAsset) setPendingHighlight(location.state.highlightAsset);
     }
-    window.history.replaceState({}, '', window.location.pathname);
-  }, []); // eslint-disable-line
+    // Clear state cleanly via navigate so this effect doesn't re-fire
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.state]); // eslint-disable-line
 
   // ── Certs ─────────────────────────────────────────────────────────────────
   const [certs,   setCerts]   = useState([]);
@@ -366,6 +368,7 @@ function Home({ user, onLogout }) {
             user={user}
             onGoToVault={handleGoToVault}
             onBack={() => setTab('home')}
+            onVaultSaved={() => setTab('vault')}
           />
         )}
 
@@ -443,6 +446,7 @@ function Home({ user, onLogout }) {
         {/* ACTIVITY */}
         {tab === 'activity' && (
           <Activity
+            user={user}
             reports={reports}
             vault={vaultItems}
             certs={certs}

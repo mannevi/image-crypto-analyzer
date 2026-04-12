@@ -215,7 +215,7 @@ function Profile({ user, vault, reports, certs, lvault, lreports, lcerts, onLogo
   // ── Edit Name ─────────────────────────────────────────────────────────────
   const [editingName,  setEditingName]  = useState(false);
   const [displayName,  setDisplayName]  = useState(
-    () => localStorage.getItem('pinit_display_name') || name
+    () => localStorage.getItem(`pinit_display_name_${email}`) || name
   );
   const [nameInput,    setNameInput]    = useState(name);
 
@@ -223,13 +223,13 @@ function Profile({ user, vault, reports, certs, lvault, lreports, lcerts, onLogo
     const trimmed = nameInput.trim();
     if (!trimmed) { setNameInput(displayName); setEditingName(false); return; }
     setDisplayName(trimmed);
-    localStorage.setItem('pinit_display_name', trimmed);
+    localStorage.setItem(`pinit_display_name_${email}`, trimmed);
     setEditingName(false);
   };
 
   // ── Profile Picture ───────────────────────────────────────────────────────
   const [avatarImg, setAvatarImg] = useState(
-    () => localStorage.getItem('pinit_avatar') || null
+    () => localStorage.getItem(`pinit_avatar_${email}`) || null
   );
   const handleAvatarChange = (e) => {
     const file = e.target.files?.[0];
@@ -238,27 +238,26 @@ function Profile({ user, vault, reports, certs, lvault, lreports, lcerts, onLogo
     reader.onloadend = () => {
       const result = reader.result;
       setAvatarImg(result);
-      localStorage.setItem('pinit_avatar', result);
-    };
+      localStorage.setItem(`pinit_avatar_${email}`, result);    };
     reader.readAsDataURL(file);
   };
 
   // ── Notifications ─────────────────────────────────────────────────────────
   const [pushNotif,  setPushNotif]  = useState(
-    () => localStorage.getItem('pinit_push_notif') !== 'false'
+    () => localStorage.getItem(`pinit_push_notif_${email}`) !== 'false'
   );
   const [emailNotif, setEmailNotif] = useState(
-    () => localStorage.getItem('pinit_email_notif') !== 'false'
+    () => localStorage.getItem(`pinit_email_notif_${email}`) !== 'false'
   );
   const togglePush = () => {
     const next = !pushNotif;
     setPushNotif(next);
-    localStorage.setItem('pinit_push_notif', String(next));
+    localStorage.setItem(`pinit_push_notif_${email}`, String(next));
   };
   const toggleEmail = () => {
     const next = !emailNotif;
     setEmailNotif(next);
-    localStorage.setItem('pinit_email_notif', String(next));
+    localStorage.setItem(`pinit_email_notif_${email}`, String(next));
   };
 
   // ── Active Sessions ───────────────────────────────────────────────────────

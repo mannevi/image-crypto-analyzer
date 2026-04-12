@@ -5,7 +5,9 @@
 const API_BASE = 'https://pinit-backend.onrender.com';
 
 const getAuthToken = () =>
-  sessionStorage.getItem('pinit_token') || localStorage.getItem('savedToken') || '';
+  sessionStorage.getItem('pinit_token') ||
+  localStorage.getItem('pinit_token')   ||
+  localStorage.getItem('savedToken')    || '';
 
 // ── Existing helpers (unchanged) ──────────────────────────────────────────────
 export const generateToken = () =>
@@ -29,10 +31,11 @@ export const createShareLink = async (assetId, options) => {
       'Authorization': `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify({
-      asset_id        : assetId,
-      permission      : options.permission,       // 'view_only' | 'view_and_download'
-      expires_in      : options.expiresIn,        // '1d' | '7d' | '30d' | 'none'
-      require_approval: options.requireApproval,  // boolean
+      asset_id          : assetId,
+      permission        : options.permission,       // 'view_only' | 'view_and_download'
+      expires_in        : options.expiresIn,        // '1d' | '7d' | '30d' | 'none'
+      require_approval  : options.requireApproval,  // boolean
+      full_image_base64 : options.full_image_base64 || null, // full PNG for crisp display
     }),
   });
   if (!res.ok) throw new Error('Could not create share link');

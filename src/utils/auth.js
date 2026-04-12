@@ -4,6 +4,7 @@
 
 export const saveToken = (token) => {
   sessionStorage.setItem('pinit_token', token);
+  localStorage.setItem('pinit_token', token); // ← ADD for dev
 };
 
 export const getToken = () => {
@@ -13,6 +14,7 @@ export const getToken = () => {
 export const removeToken = () => {
   sessionStorage.removeItem('pinit_token');
   sessionStorage.removeItem('pinit_user');
+  localStorage.removeItem('pinit_token');     // ← ADD for dev
 };
 
 export const saveUser = (user) => {

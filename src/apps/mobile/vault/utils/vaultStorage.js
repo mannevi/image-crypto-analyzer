@@ -85,10 +85,13 @@ export const loadVaultAssets = async () => {
 
 // ── Delete ─────────────────────────────────────────────────────────────────────
 export const deleteVaultAsset = async (id) => {
-  addToBlacklist(id);
-  try { await vaultAPI.delete(id); } catch (e) { console.warn('Backend delete failed:', e.message); }
-  // Clean up device cache so the image isn't orphaned
-  evictVaultCachedImage(id);
+  try {
+    await vaultAPI.delete(id);
+    addToBlacklist(id);        // ✅ only after successful delete
+    evictVaultCachedImage(id);
+  } catch (e) {
+    console.warn('Backend delete failed:', e.message);
+  }
 };
 
 // ── Download ───────────────────────────────────────────────────────────────────

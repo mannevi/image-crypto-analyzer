@@ -1,17 +1,36 @@
-const BASE_URL ='https://pinit-backend.onrender.com';;
-const getToken = () => sessionStorage.getItem('pinit_token');
+const BASE_URL = 'https://pinit-backend.onrender.com';
+const getToken = () =>
+  sessionStorage.getItem('pinit_token') ||
+  localStorage.getItem('pinit_token')   ||
+  localStorage.getItem('savedToken')    || '';
+
+const clearToken = () => {
+  sessionStorage.removeItem('pinit_token');
+  localStorage.removeItem('pinit_token');
+};
 
 const request = async (method, endpoint, body = null, requiresAuth = true) => {
   const headers = { 'Content-Type': 'application/json' };
   if (requiresAuth) {
     const token = getToken();
-    if (!token) throw new Error('Not authenticated');
+    if (!token) {
+      window.location.href = '/login';
+      throw new Error('Not authenticated');
+    }
     headers['Authorization'] = `Bearer ${token}`;
   }
   const config = { method, headers };
   if (body) config.body = JSON.stringify(body);
   const response = await fetch(`${BASE_URL}${endpoint}`, config);
-  const data     = await response.json();
+
+  // Auto-redirect on expired/invalid token
+  if (response.status === 401 || response.status === 403) {
+    clearToken();
+    window.location.href = '/login';
+    throw new Error('Session expired. Please log in again.');
+  }
+
+  const data = await response.json();
   if (!response.ok) throw new Error(data.detail || 'Request failed');
   return data;
 };

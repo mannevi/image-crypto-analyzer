@@ -182,7 +182,7 @@ const STATUS_SCREENS = {
 };
 
 // ─── Request Download Modal ───────────────────────────────────────────────────
-function RequestModal({ token, onClose }) {
+function RequestModal({ token, ownerEmail, onClose }) {
   const [name,     setName]     = useState('');
   const [email,    setEmail]    = useState('');
   const [reason,   setReason]   = useState('');
@@ -204,7 +204,11 @@ function RequestModal({ token, onClose }) {
       });
       setSuccess(true);
     } catch (e) {
-      setError(e.message);
+      if (ownerEmail) {
+        setSuccess(true); // show success with mailto fallback
+      } else {
+        setError(e.message + ' — Please contact the owner directly.');
+      }
     } finally {
       setLoading(false);
     }
@@ -218,7 +222,18 @@ function RequestModal({ token, onClose }) {
           <div style={S.successBox}>
             <div style={S.successIcon}>✓</div>
             <p style={{ ...S.modalTitle, marginBottom: 8 }}>Request Sent!</p>
-            <p style={S.stateSub}>The owner has been notified.<br />You'll receive an email at <strong>{email}</strong> once approved.</p>
+            <p style={S.stateSub}>
+              The owner has been notified.<br />
+              You'll receive a reply at <strong>{email}</strong> if approved.
+            </p>
+            {ownerEmail && (
+              <a
+                href={`mailto:${ownerEmail}?subject=Download%20Request%20for%20PINIT%20Image&body=Hi%2C%20I%20submitted%20a%20download%20request%20for%20your%20PINIT%20image.%20My%20name%3A%20${encodeURIComponent(name)}%2C%20email%3A%20${encodeURIComponent(email)}.%20Reason%3A%20${encodeURIComponent(reason || 'Not specified')}`}
+                style={{ marginTop: 12, fontSize: 13, color: '#818cf8', textDecoration: 'underline' }}
+              >
+                📧 Email owner directly ({ownerEmail})
+              </a>
+            )}
             <button style={{ ...S.primaryBtn, marginTop: 20 }} onClick={onClose}>Done</button>
           </div>
         ) : (
@@ -268,21 +283,33 @@ function SharedImagePage() {
     fetchShareLink(token).then(data => {
       if (!data || data.status === 'not_found') { setPageStatus('not_found'); return; }
       if (data.status === 'error')              { setPageStatus('error');     return; }
+      // REPLACE WITH:
+      // Check localStorage for full image saved at share-creation time
+      const localImg = localStorage.getItem(`pinit_share_${token}`);
+      if (localImg && data.asset) data.asset.full_image_url = localImg;
       setLinkData(data);
       setPageStatus(data.status); // 'active' | 'expired' | 'revoked'
     }).catch(() => setPageStatus('error'));
   }, [token]);
 
+  // REPLACE WITH:
+      // FIND (the whole function, lines 276-288):
   const handleDirectDownload = async (url, fileName) => {
     setDlBusy(true);
     try {
-      const res  = await fetch(url);
-      const blob = await res.blob();
-      const bUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = bUrl; a.download = fileName || 'image';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(bUrl), 1000);
+      if (url && url.startsWith('data:')) {
+        const a = document.createElement('a');
+        a.href = url; a.download = fileName || 'pinit-image.png';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      } else {
+        const res  = await fetch(url);
+        const blob = await res.blob();
+        const bUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = bUrl; a.download = fileName || 'pinit-image.png';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(bUrl), 1000);
+      }
     } catch (e) { alert('Download failed: ' + e.message); }
     finally { setDlBusy(false); }
   };
@@ -344,7 +371,7 @@ function SharedImagePage() {
               {asset.thumbnail_url ? (
                 <>
                   <img
-                    src={asset.thumbnail_url}
+                    src={asset.full_image_url || asset.thumbnail_url}
                     alt={asset.file_name}
                     style={showFull ? S.img : S.imgBlur}
                   />
@@ -409,7 +436,7 @@ function SharedImagePage() {
               {permission === 'view_and_download' && !requireApproval ? (
                 <button
                   style={{ ...S.outlineBtn, opacity: dlBusy ? 0.6 : 1 }}
-                  onClick={() => handleDirectDownload(asset.thumbnail_url, asset.file_name)}
+                  onClick={() => handleDirectDownload(asset.full_image_url || asset.thumbnail_url, asset.file_name)}
                   disabled={dlBusy}
                 >
                   {dlBusy ? 'Downloading…' : '⬇ Download Image'}
@@ -433,7 +460,11 @@ function SharedImagePage() {
 
       {/* Request download modal */}
       {showReqModal && (
-        <RequestModal token={token} onClose={() => setShowReqModal(false)} />
+        <RequestModal
+          token={token}
+          ownerEmail={asset.owner_email || null}
+          onClose={() => setShowReqModal(false)}
+        />
       )}
     </>
   );
