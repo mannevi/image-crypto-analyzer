@@ -148,8 +148,9 @@ function Home({ user, onLogout }) {
   };
 
   const shareCert = async (cert) => {
-    // Use current origin always — so local testing opens localhost, Vercel opens Vercel
-    const base = window.location.origin;
+    const base = window.location.origin.includes('localhost')
+      ? 'https://image-crypto-analyzer.vercel.app'
+      : window.location.origin;
     const url  = `${base}/public/certificate/${cert.certificate_id}`;
 
     // cert.analysis_data has all the real fields the backend stores
@@ -199,6 +200,9 @@ function Home({ user, onLogout }) {
       const existing = JSON.parse(localStorage.getItem('sharedCertificates') || '[]');
       const deduped  = existing.filter(c => c.certificate_id !== cert.certificate_id);
       localStorage.setItem('sharedCertificates', JSON.stringify([certRecord, ...deduped].slice(0, 20)));
+      // Also store by cert ID directly — so PublicCertificateView can find it
+      // even when the sharedCertificates array lookup fails cross-device
+      localStorage.setItem(`pinit_cert_${cert.certificate_id}`, JSON.stringify(certRecord));
     } catch (e) { console.warn('Local cert cache failed (non-critical):', e); }
 
     if (navigator.share) {
@@ -446,7 +450,6 @@ function Home({ user, onLogout }) {
         {/* ACTIVITY */}
         {tab === 'activity' && (
           <Activity
-            user={user}
             reports={reports}
             vault={vaultItems}
             certs={certs}
