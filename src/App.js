@@ -1,27 +1,16 @@
-/**
- * PINIT — App.js (updated for mobile-first auth)
- *
- * Changes from original:
- *  - Login / Register now import from /apps/mobile/auth/
- *  - Admin routes preserved exactly as before (not our concern)
- *  - No logic changes — only import paths updated
- */
+// PINIT — Admin Web Panel
 
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 
-// ── Mobile auth screens
-import Login    from './apps/mobile/auth/Login';
-import Register from './apps/mobile/auth/Register';
-
-// ── Mobile home screen (replaces UserDashboard)
-import Home from './apps/mobile/home/Home';
+import Login    from './components/Login';
+import Register from './components/Register';
+import UserDashboard from './components/UserDashboard';
 
 // ── Public shared image page (no auth required)
 import SharedImagePage from './components/SharedImagePage';
 
 // ── Admin screens (unchanged)
-import UserDashboard         from './components/UserDashboard'; // kept as fallback
 import AdminDashboard        from './components/AdminDashboard';
 import AdminLayout           from './components/AdminLayout';
 import ResetPassword         from './components/ResetPassword';
@@ -166,7 +155,7 @@ function App() {
           path="/user/dashboard"
           element={
             <RequireAuth role="user">
-              <Home user={currentUser} onLogout={handleLogout} />
+              <UserDashboard user={currentUser} onLogout={handleLogout} />
             </RequireAuth>
           }
         />
