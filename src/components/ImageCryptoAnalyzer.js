@@ -2548,8 +2548,8 @@ const saveReportToLocalStorage = (report, userInfo) => {
         <div className="max-w-6xl mx-auto">
           <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 text-white">
-              <h1 className="text-3xl font-bold mb-2">Image Encryption & Analysis System</h1>
-              <p className="text-blue-100">Advanced UUID embedding with AI-powered classification</p>
+              <h1 className="text-3xl font-bold mb-2">Capture Proof & Analyser Tool</h1>
+              <p className="text-blue-100">Embed your PINIT identity into images and verify ownership</p>
             </div>
 
             <div className="flex border-b">
@@ -2562,7 +2562,7 @@ const saveReportToLocalStorage = (report, userInfo) => {
                 }`}
               >
                 <Camera className="inline mr-2" size={20} />
-                UUID Encryption
+                Capture &amp; Embed
               </button>
               <button
                 onClick={() => setActiveTab('analyze')}
@@ -2573,21 +2573,13 @@ const saveReportToLocalStorage = (report, userInfo) => {
                 }`}
               >
                 <FileSearch className="inline mr-2" size={20} />
-                Image Analysis
+                Analyse &amp; Verify
               </button>
             </div>
 
             <div className="p-6">
               {activeTab === 'encrypt' && (
                 <div className="space-y-6">
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <h3 className="font-semibold text-blue-900 mb-2">Advanced LSB Steganography</h3>
-                    <p className="text-blue-800 text-sm">
-                      This system uses advanced LSB steganography with a validation header.
-                      Your User ID and GPS location are embedded across RGB channels with error detection.
-                      <strong className="block mt-2">Important: Download as PNG to preserve encryption!</strong>
-                    </p>
-                  </div>
 
                   <div className="grid md:grid-cols-2 gap-6">
                     <div>
