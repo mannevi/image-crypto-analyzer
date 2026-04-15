@@ -335,7 +335,7 @@ function AdminDashboard({ user, onLogout }) {
                 <h2>Quick Actions</h2>
                 <div className="stats-grid">
                   {[
-                    { icon: <Camera size={32} />,      title: 'Capture and PINIT', desc: 'Access encryption & analysis tools', action: () => navigate('/analyzer') },
+                    { icon: <Camera size={32} />,      title: 'Capture and PINIT', desc: 'Access encryption & analysis tools', action: () => navigate('/admin/analyzer') },
                     { icon: <FolderOpen size={32} />,  title: 'View Assets',           desc: 'Browse all encrypted assets',       action: () => goTab('assets') },
                     { icon: <Shield size={32} />,      title: 'Track Assets',          desc: 'Monitor modifications & versions',  action: () => navigate('/admin/assets') },
                     { icon: <CheckCircle size={32} />, title: 'Verify Image',          desc: 'Check image authenticity',          action: () => navigate('/admin/verify') },

@@ -212,6 +212,17 @@ function App() {
           }
         />
 
+        <Route
+          path="/admin/analyzer"
+          element={
+            <RequireAuth role="admin">
+              <AdminLayout user={currentUser} onLogout={handleLogout}>
+                <ImageCryptoAnalyzer user={currentUser} />
+              </AdminLayout>
+            </RequireAuth>
+          }
+        />
+
         {/* ── Public shared image (no login required) ─────────────────────── */}
         <Route path="/share/image/:token" element={<SharedImagePage />} />
 
